@@ -1,0 +1,23 @@
+{% extends "client_base.html" %}
+{% block title %}Forms to sign{% endblock %}
+{% block content %}
+<section class="stack" style="gap:8px">
+  <span class="eyebrow">For {{ p.client_name }}</span>
+  <h1>{{ business_name }} has sent you {{ total }} form{{ 's' if total!=1 }} to sign</h1>
+  <p class="muted">Review each one, fill in anything requested, and sign. It takes a few minutes and you can stop and come back with the same link until {{ p.expires_at|day }}.</p>
+</section>
+{% if p.message %}<section class="panel"><span class="eyebrow">Note from {{ business_name }}</span><p style="white-space:pre-wrap">{{ p.message }}</p></section>{% endif %}
+<section class="panel">
+  <div class="panel-head"><h2>Your forms</h2><span class="muted small">{{ signed }} of {{ total }} signed</span></div>
+  <div class="doc-list">
+  {% for it in items %}
+    <div class="doc-row">
+      <div class="doc-main"><strong>{{ it.template_name }}</strong><span class="small muted">{{ 'Document to review and sign' if it.template_kind=='pdf' else 'Form to fill in and sign' }}</span></div>
+      {% if it.signed_at %}<span class="stamp s-completed">Signed</span>
+      {% else %}<a class="btn {{ 'btn-primary' if next_item and next_item.id==it.id }}" href="{{ url_for('client_form', token=p.token, iid=it.id) }}">{{ 'Start' if signed==0 and next_item.id==it.id else 'Open' }}</a>{% endif %}
+    </div>
+  {% endfor %}
+  </div>
+</section>
+{% if next_item %}<div><a class="btn btn-primary btn-lg" href="{{ url_for('client_form', token=p.token, iid=next_item.id) }}">{{ 'Start signing' if signed==0 else 'Continue' }}</a></div>{% endif %}
+{% endblock %}

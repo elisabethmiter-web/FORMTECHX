@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Packets{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><span class="eyebrow">Signing packets</span><h1>Who still needs to sign</h1></div>
+</div>
+
+<div class="stats">
+  <div class="stat"><span class="eyebrow">Awaiting client</span><strong>{{ counts.awaiting }}</strong><span class="muted small">sent, not opened yet</span></div>
+  <div class="stat"><span class="eyebrow">Opened, in progress</span><strong>{{ counts.viewed }}</strong><span class="muted small">client has the link open</span></div>
+  <div class="stat"><span class="eyebrow">Completed</span><strong>{{ counts.completed }}</strong><span class="muted small">every form signed</span></div>
+</div>
+
+<section class="panel">
+  <div class="panel-head">
+    <div class="tabs">
+      <a href="?show=all" class="{{ 'active' if show=='all' }}">All</a>
+      <a href="?show=open" class="{{ 'active' if show=='open' }}">Open</a>
+      <a href="?show=completed" class="{{ 'active' if show=='completed' }}">Completed</a>
+    </div>
+  </div>
+  {% if packets %}
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Client</th><th>Status</th><th>Signed</th><th>Sent</th><th>Last change</th></tr></thead>
+    <tbody>
+    {% for p in packets %}
+      <tr class="clickable" onclick="location.href='{{ url_for('packet_detail', pid=p.id) }}'">
+        <td><div class="client-cell"><a href="{{ url_for('packet_detail', pid=p.id) }}">{{ p.client_name }}</a><span class="muted small">{{ p.client_email }}</span></div></td>
+        <td><span class="stamp s-{{ p.state }}">{{ {'draft':'Draft','sent':'Sent','viewed':'Opened','in_progress':'In progress','completed':'Signed','expired':'Expired','voided':'Cancelled'}[p.state] }}</span></td>
+        <td><div class="progress"><div class="bar {{ 'done' if p.signed==p.total }}"><span style="width:{{ (100*p.signed/p.total)|round|int if p.total else 0 }}%"></span></div>{{ p.signed }} of {{ p.total }}</div></td>
+        <td class="small">{{ p.sent_at|day }}</td>
+        <td class="small muted">{{ (p.completed_at or p.first_viewed_at or p.sent_at or p.created_at)|day }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty">
+    <h2>No packets {{ 'here' if show!='all' else 'yet' }}</h2>
+    {% if not has_templates %}
+      <p class="muted">Start by adding the forms you send to clients: upload your PDFs or build a fillable form. Then bundle them into a packet.</p>
+      <a class="btn btn-primary" href="{{ url_for('library') }}">Add your first form</a>
+    {% else %}
+      <p class="muted">A packet bundles one or more forms for a client. You'll get a signing link to send, and this page tracks who has opened and signed.</p>
+      <a class="btn btn-primary" href="{{ url_for('new_packet') }}">Create a packet</a>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
