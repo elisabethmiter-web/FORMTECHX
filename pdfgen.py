@@ -153,10 +153,36 @@ def _stamp(width, height, text):
     return PdfReader(buf).pages[0]
 
 
-def signed_document(out_path, source_pdf, body, fields, answers, sig_path, meta):
+def _spec_tables(specs):
+    rooms = specs.get("rooms", [])
+    n = sum(len(r["items"]) for r in rooms)
+    out = [_p(f"{len(rooms)} room{'s' if len(rooms) != 1 else ''}, {n} item{'s' if n != 1 else ''}", SMALL)]
+    room_h = ParagraphStyle("rh", parent=H2, textColor=ACCENT, spaceBefore=12)
+    widths = [0.3 * inch, 0.8 * inch, 1.4 * inch, 1.05 * inch, 1.2 * inch, 0.8 * inch, 1.05 * inch]
+    for i, room in enumerate(rooms, 1):
+        rows = [[_p(h, LABEL) for h in ("#", "Category", "Item", "Make", "Model", "Finish", "Notes")]]
+        for j, it in enumerate(room["items"], 1):
+            item = it["type"] + (f" ×{it['qty']}" if it.get("qty", 1) > 1 else "")
+            rows.append([_p(j, SMALL), _p(it["category"], SMALL), _p(item, VALUE), _p(it["make"], VALUE),
+                         _p(it["model"], VALUE), _p(it.get("finish") or "", SMALL), _p(it.get("notes") or "", SMALL)])
+        t = Table(rows, colWidths=widths, repeatRows=1)
+        t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LINEBELOW", (0, 0), (-1, -1), 0.5, RULE),
+                               ("LINEBELOW", (0, 0), (-1, 0), 0.9, INK), ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                               ("RIGHTPADDING", (0, 0), (-1, -1), 3), ("TOPPADDING", (0, 0), (-1, -1), 4),
+                               ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]))
+        out += [_p(f"Room {i}: {room['name']}", room_h), t]
+    if specs.get("notes"):
+        out += [_p("General notes", H2), _p(specs["notes"])]
+    out += [Spacer(1, 10), _p("I confirm these specifications are correct to the best of my knowledge.")]
+    return out
+
+
+def signed_document(out_path, source_pdf, body, fields, answers, sig_path, meta, specs=None):
     story = [_p(meta["form_name"], H1),
              _p(f"Prepared by {meta['business']} for {meta['client_name']}", SMALL), Spacer(1, 10)]
-    if source_pdf is None:
+    if specs:
+        story += _spec_tables(specs)
+    elif source_pdf is None:
         if body:
             for para in body.split("\n\n"):
                 story += [_p(para.strip()), Spacer(1, 6)]

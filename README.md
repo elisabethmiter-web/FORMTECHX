@@ -10,6 +10,10 @@ A small web app for sending forms to clients for e-signature and getting confirm
 
 Signatures are "simple electronic signatures" (drawn or typed, plus consent and an audit record). That's generally fine for engagement letters, intake and consent forms. For documents that legally need identity verification or a qualified signature, use a dedicated provider.
 
+## Plumbing & appliance spec form
+
+In **Form library**, click **Add plumbing & appliance spec form** once. Then include it in any packet like your other forms. The client adds rooms (up to 20), and in each room adds plumbing fixtures and appliances (sink, faucet, toilet, stove, dishwasher and more) with make and model, plus optional finish, quantity and notes. They sign at the bottom, and the signed PDF lists every room as a table. The item list is in `forms.py` (`CATEGORIES`).
+
 ## Run it on your computer (5 minutes)
 
 Needs Python 3.10 or newer.

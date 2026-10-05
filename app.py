@@ -17,6 +17,7 @@ from flask import (Flask, abort, flash, g, redirect, render_template, request,
                    send_file, session, url_for)
 from werkzeug.utils import secure_filename
 
+import forms
 import mailer
 import pdfgen
 
@@ -49,7 +50,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS templates (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('pdf','form')),
+  kind TEXT NOT NULL CHECK (kind IN ('pdf','form','specs')),
   description TEXT DEFAULT '',
   file_path TEXT,
   file_sha256 TEXT,
@@ -119,6 +120,12 @@ def close_db(_exc):
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
+    old = conn.execute("SELECT sql FROM sqlite_master WHERE name='templates'").fetchone()
+    if old and "'specs'" not in old[0]:
+        # Older database: widen the allowed form kinds to include the spec form.
+        conn.executescript("ALTER TABLE templates RENAME TO templates_old;")
+        conn.executescript(SCHEMA)
+        conn.executescript("INSERT INTO templates SELECT * FROM templates_old; DROP TABLE templates_old;")
     conn.executescript(SCHEMA)
     conn.close()
 
@@ -328,6 +335,17 @@ def parse_fields_from_request():
                        "required": bool(it.get("required")),
                        "help": str(it.get("help", "")).strip()[:300]})
     return fields
+
+
+@app.route("/library/specs", methods=["POST"])
+@login_required
+def add_spec_form():
+    d = forms.SPEC_FORM
+    db().execute("INSERT INTO templates (name, kind, description, fields_json, created_at) VALUES (?,?,?,?,?)",
+                 (request.form.get("name", "").strip() or d["name"], "specs", d["description"], "[]", now()))
+    db().commit()
+    flash("Spec form added to your library.", "ok")
+    return redirect(url_for("library"))
 
 
 @app.route("/library/new", methods=["GET", "POST"])
@@ -581,6 +599,8 @@ def client_form(token, iid):
                          (p["id"],)).fetchall()
     errors, answers = {}, {}
     body = it["template_body"] or ""
+    is_specs = it["template_kind"] == "specs"
+    spec_initial = None
 
     if request.method == "POST":
         for f in fields:
@@ -593,6 +613,16 @@ def client_form(token, iid):
                 answers[f["id"]] = val
                 if f["required"] and not val:
                     errors[f["id"]] = "This field is required."
+        if is_specs:
+            try:
+                spec_initial = json.loads(request.form.get("specs_json") or "{}")
+            except ValueError:
+                spec_initial = {}
+            clean, err = forms.validate("room_specs", spec_initial)
+            if err:
+                errors["specs"] = err
+            else:
+                answers = clean
         signer = request.form.get("signer_name", "").strip()[:200]
         sig_data = request.form.get("signature", "")
         if not signer:
@@ -621,7 +651,8 @@ def client_form(token, iid):
                     "ip": client_ip(), "user_agent": request.headers.get("User-Agent", "")[:300],
                     "form_name": it["template_name"], "original_sha256": it["template_sha256"]}
             source = os.path.join(UPLOAD_DIR, it["template_file"]) if it["template_file"] else None
-            pdfgen.signed_document(out_path, source, body, fields, answers, sig_path, meta)
+            pdfgen.signed_document(out_path, source, body, fields, answers, sig_path, meta,
+                                   specs=answers if is_specs else None)
             digest = sha256_file(out_path)
             db().execute(
                 "UPDATE packet_items SET answers_json=?, signer_name=?, signature_path=?, signed_at=?, "
@@ -640,7 +671,8 @@ def client_form(token, iid):
             return redirect(url_for("client_form", token=token, iid=nxt["id"]))
 
     return render_template("client_form.html", p=p, it=it, fields=fields, items=items, errors=errors,
-                           answers=answers, body=body,
+                           answers=answers, body=body, is_specs=is_specs, spec_initial=spec_initial,
+                           spec_def=forms.SPEC_FORM if is_specs else None,
                            signer_default=request.form.get("signer_name", p["client_name"]))
 
 

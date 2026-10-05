@@ -3,7 +3,9 @@
 {% block content %}
 <div class="page-head">
   <div><span class="eyebrow">Form library</span><h1>Your forms</h1><p class="muted">Reusable forms you can add to any packet.</p></div>
-  <div class="row"><a class="btn" href="{{ url_for('new_form') }}">Build a fillable form</a></div>
+  <div class="row">
+    <form method="post" action="{{ url_for('add_spec_form') }}"><input type="hidden" name="csrf" value="{{ csrf_token() }}"><button class="btn">Add plumbing &amp; appliance spec form</button></form>
+    <a class="btn" href="{{ url_for('new_form') }}">Build a fillable form</a></div>
 </div>
 
 <details class="panel" {{ 'open' if not templates }}>
@@ -29,13 +31,13 @@
 <div class="forms-grid">
   {% for t in templates %}
   <article class="form-card">
-    <span class="kind">{{ 'PDF document' if t.kind=='pdf' else 'Fillable form' }}{% if t.field_count %} · {{ t.field_count }} field{{ 's' if t.field_count!=1 }}{% endif %}</span>
+    <span class="kind">{{ {'pdf':'PDF document','form':'Fillable form','specs':'Room-by-room spec form'}[t.kind] }}{% if t.field_count %} · {{ t.field_count }} field{{ 's' if t.field_count!=1 }}{% endif %}</span>
     <h3>{{ t.name }}</h3>
     <span class="muted small">Added {{ t.created_at|day }}</span>
     <div class="actions">
       <a class="btn" href="{{ url_for('new_packet', t=t.id) }}">Send</a>
       {% if t.kind=='pdf' %}<a class="btn btn-quiet" href="{{ url_for('template_file', tid=t.id) }}" target="_blank">Preview</a>{% endif %}
-      <a class="btn btn-quiet" href="{{ url_for('edit_form', tid=t.id) }}">Edit</a>
+      {% if t.kind != 'specs' %}<a class="btn btn-quiet" href="{{ url_for('edit_form', tid=t.id) }}">Edit</a>{% endif %}
       <form method="post" action="{{ url_for('archive_form', tid=t.id) }}" data-confirm="Remove “{{ t.name }}” from the library?">
         <input type="hidden" name="csrf" value="{{ csrf_token() }}"><button class="btn btn-quiet btn-danger">Remove</button></form>
     </div>

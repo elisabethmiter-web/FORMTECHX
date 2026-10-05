@@ -18,7 +18,7 @@
     <div class="picker" id="picker">
     {% for t in templates %}
       <label class="pick"><input type="checkbox" name="template_ids" value="{{ t.id }}" {{ 'checked' if t.id in selected }}>
-        <span><strong style="font-weight:600">{{ t.name }}</strong><br><span class="muted small">{{ 'PDF document' if t.kind=='pdf' else 'Fillable form' }}</span></span>
+        <span><strong style="font-weight:600">{{ t.name }}</strong><br><span class="muted small">{{ {'pdf':'PDF document','form':'Fillable form','specs':'Room-by-room spec form'}[t.kind] }}</span></span>
         <span class="order"></span></label>
     {% endfor %}
     </div>

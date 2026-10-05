@@ -19,6 +19,12 @@
       <p class="muted small pdf-loading">Loading document…</p>
     </div>
   </section>
+  {% elif is_specs %}
+  <section class="panel">
+    <div id="spec-form"></div>
+    {% if errors.get('specs') %}<p class="field-error" id="spec-server-error">{{ errors.specs }}</p>{% endif %}
+    <input type="hidden" name="specs_json" id="specs_json">
+  </section>
   {% elif body %}
   <section class="panel"><div class="form-body">{{ body }}</div></section>
   {% endif %}
@@ -77,6 +83,20 @@
 {% if it.template_kind=='pdf' %}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="{{ url_for('static', filename='pdfview.js') }}"></script>
+{% endif %}
+{% if is_specs %}
+<script src="{{ url_for('static', filename='specform.js') }}"></script>
+<script>
+(function () {
+  const spec = SpecForm.mount(document.getElementById('spec-form'), {{ spec_def|tojson }}, { initial: {{ (spec_initial or {})|tojson }} });
+  // Runs before the signature script: stop the submit if the spec form isn't complete.
+  document.getElementById('sign-form').addEventListener('submit', e => {
+    const v = spec.validate();
+    if (!v.ok) { e.preventDefault(); e.stopImmediatePropagation(); spec.showError(v.message, v.el); return; }
+    document.getElementById('specs_json').value = JSON.stringify(spec.value());
+  });
+})();
+</script>
 {% endif %}
 <script src="{{ url_for('static', filename='sign.js') }}"></script>
 {% endblock %}
