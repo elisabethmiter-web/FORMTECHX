@@ -49,7 +49,7 @@
           {% if p.missing %}<div class="still-needed" title="{{ p.missing|join(', ') }}"><span>Still needed:</span><ul>{% for m in p.missing[:4] %}<li>{{ m }}</li>{% endfor %}{% if p.missing|length > 4 %}<li>+ {{ p.missing|length - 4 }} more</li>{% endif %}</ul></div>
           {% elif p.total == 0 and p.state not in ('completed','voided') %}<div class="still-needed"><span>Receipt not confirmed yet</span></div>{% endif %}</td>
         <td><div class="progress"><div class="bar {{ 'done' if p.signed==p.total }}"><span style="width:{{ (100*p.signed/p.total)|round|int if p.total else 0 }}%"></span></div>{{ p.signed }} of {{ p.total }}</div></td>
-        <td class="small">{{ p.sent_at|day }}{% if p.deadline.label %}<div class="due {{ 'late' if p.deadline.overdue }}">{{ p.deadline.label }}</div>{% elif p.completed_at %}<div class="muted">Done {{ p.completed_at|day }}</div>{% endif %}</td>
+        <td class="small nowrap">{{ p.sent_at|day }}{% if p.deadline.label %}<div class="due {{ 'late' if p.deadline.overdue }}">{{ p.deadline.label }}</div>{% elif p.completed_at %}<div class="muted">Done {{ p.completed_at|day }}</div>{% endif %}</td>
         <td class="small fu-cell">{% if p.last_fu %}<strong>#{{ p.last_fu.n }}</strong> · {{ p.last_fu.at|day }}{% if p.last_fu.note %}<div class="muted fu-note" title="{{ p.last_fu.note }}">{{ p.last_fu.note|truncate(60) }}</div>{% endif %}{% elif p.deadline.overdue %}<span class="due late">None yet</span>{% else %}<span class="muted">—</span>{% endif %}</td>
       </tr>
     {% endfor %}
