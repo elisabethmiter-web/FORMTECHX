@@ -251,3 +251,26 @@ dl.meta dd { margin: 0; font-variant-numeric: tabular-nums; min-width: 0; overfl
 .file-card .doc-main { flex: 1; min-width: 160px; overflow-wrap: anywhere; }
 .file-preview { max-width: 100%; max-height: 70vh; border: 1px solid var(--rule); border-radius: 6px; display: block; margin: 0 auto; }
 .adhoc-row .doc-main { display: grid; gap: 1px; }
+
+/* ===================== layout & drawing approvals ===================== */
+.approval-card { border: 1px solid var(--rule); border-radius: 8px; padding: 14px 16px 16px; margin: 0; display: grid; gap: 12px; background: var(--bg); }
+.approval-card legend { padding: 0 6px; }
+.tag-layout { color: var(--accent); background: var(--accent-soft); }
+.tag-drawing { color: var(--ok); background: var(--ok-soft); }
+.option-drop { border: 1.5px dashed var(--muted); border-radius: 8px; padding: 12px; background: var(--surface); }
+.option-drop img { max-width: 100%; max-height: 180px; object-fit: contain; border-radius: 4px; }
+.note-box { background: var(--bg); border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: 6px; padding: 12px 14px; display: grid; gap: 4px; white-space: pre-wrap; }
+.layout-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.layout-option { border: 2px solid var(--rule); border-radius: 10px; padding: 10px; display: grid; gap: 10px; cursor: pointer; font-weight: 400; background: var(--surface); }
+.layout-option.picked { border-color: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+.layout-img { display: block; background: var(--bg); border-radius: 6px; overflow: hidden; }
+.layout-img img { width: 100%; height: auto; max-height: 420px; object-fit: contain; display: block; }
+.layout-choice { display: flex; align-items: center; gap: 10px; font-size: 1rem; }
+.layout-choice input, .refuse-choice input, .decision-choice input { width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
+.refuse-choice, .decision-choice { display: flex; align-items: flex-start; gap: 10px; border: 2px solid var(--rule); border-radius: 10px; padding: 12px 14px; cursor: pointer; font-weight: 400; }
+.refuse-choice.picked, .decision-choice.neg.picked { border-color: var(--bad); box-shadow: 0 0 0 3px var(--bad-soft); }
+.decision-choice.pos.picked { border-color: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+.drawing-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.decision { display: block; font-weight: 600; font-size: 0.88rem; margin-top: 2px; }
+.decision.pos { color: var(--ok); }
+.decision.neg { color: var(--bad); }

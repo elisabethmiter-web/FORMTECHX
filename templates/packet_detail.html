@@ -28,7 +28,9 @@
   </div>
 </section>
 {% elif state=='completed' %}
-<div class="flash flash-ok">Confirmed: {{ p.client_name }} signed all {{ total }} form{{ 's' if total!=1 }} on {{ p.completed_at|when }}.</div>
+{% set ns = namespace(neg=[]) %}{% for it in items %}{% if it.signed_at and it.template_kind in ('layout','drawing') and decision_is_negative(it.template_kind, it.answers_json) %}{% set ns.neg = ns.neg + [it.template_name] %}{% endif %}{% endfor %}
+{% if ns.neg %}<div class="flash flash-error">{{ p.client_name }} completed the packet but did not approve: {{ ns.neg|join(', ') }}. See their comments below and send a revised version.</div>
+{% else %}<div class="flash flash-ok">Confirmed: {{ p.client_name }} signed all {{ total }} item{{ 's' if total!=1 }} on {{ p.completed_at|when }}.</div>{% endif %}
 {% endif %}
 
 <div class="detail-grid">
@@ -37,12 +39,15 @@
     <div class="doc-list">
     {% for it in items %}
       <div class="doc-row">
-        <div class="doc-main"><strong>{{ it.template_name }}{% if it.adhoc %} <span class="tag">One-off</span>{% endif %}</strong>
-          {% if not it.requires_signature %}<span class="small muted">{{ it.file_name|filetype if it.template_kind in ('pdf','file') and it.file_name else {'pdf':'PDF document','file':'File','form':'Fillable form','specs':'Room-by-room spec form'}[it.template_kind] }} · for the client's records · {{ 'downloaded ' ~ (it.downloaded_at|when) if it.downloaded_at else 'not downloaded yet' }}</span>
+        <div class="doc-main"><strong>{{ it.template_name }}{% if it.adhoc and it.template_kind not in ('layout','drawing') %} <span class="tag">One-off</span>{% endif %}</strong>
+          {% if not it.requires_signature %}<span class="small muted">{{ it.file_name|filetype if it.template_kind in ('pdf','file') and it.file_name else {'pdf':'PDF document','file':'File','form':'Fillable form','specs':'Room-by-room spec form','layout':'Layout approval','drawing':'Drawing approval'}[it.template_kind] }} · for the client's records · {{ 'downloaded ' ~ (it.downloaded_at|when) if it.downloaded_at else 'not downloaded yet' }}</span>
+          {% elif it.signed_at and it.template_kind in ('layout','drawing') %}<span class="small muted">{{ 'Layout approval' if it.template_kind=='layout' else 'Drawing approval' }} · signed by {{ it.signer_name }} · {{ it.signed_at|when }}</span>
+          <span class="decision {{ 'neg' if decision_is_negative(it.template_kind, it.answers_json) else 'pos' }}">{{ decision_label(it.template_kind, it.answers_json) }}{% set a = it.answers_json|fromjson %}{% if a.comments %}: “{{ a.comments }}”{% endif %}</span>
           {% elif it.signed_at %}<span class="small muted">Signed by {{ it.signer_name }} · {{ it.signed_at|when }}</span>
-          {% else %}<span class="small muted">{{ it.file_name|filetype if it.template_kind in ('pdf','file') and it.file_name else {'pdf':'PDF document','file':'File','form':'Fillable form','specs':'Room-by-room spec form'}[it.template_kind] }} · not signed yet</span>{% endif %}
+          {% else %}<span class="small muted">{{ it.file_name|filetype if it.template_kind in ('pdf','file') and it.file_name else {'pdf':'PDF document','file':'File','form':'Fillable form','specs':'Room-by-room spec form','layout':'Layout approval','drawing':'Drawing approval'}[it.template_kind] }} · not signed yet</span>{% endif %}
         </div>
-        {% if it.template_file and it.template_kind in ('pdf','file') %}<a class="btn btn-quiet" href="{{ url_for('admin_original', pid=p.id, iid=it.id) }}">Original</a>{% endif %}
+        {% if it.template_file and it.template_kind in ('pdf','file','drawing') %}<a class="btn btn-quiet" href="{{ url_for('admin_original', pid=p.id, iid=it.id) }}">Original</a>{% endif %}
+        {% if it.template_kind=='layout' %}<a class="btn btn-quiet" href="{{ url_for('admin_option', pid=p.id, iid=it.id, k=0) }}" target="_blank">Option A</a><a class="btn btn-quiet" href="{{ url_for('admin_option', pid=p.id, iid=it.id, k=1) }}" target="_blank">Option B</a>{% endif %}
         {% if not it.requires_signature %}<span class="stamp s-{{ 'completed' if it.downloaded_at else 'sent' }}">{{ 'Received' if it.downloaded_at else 'To review' }}</span>
         {% elif it.signed_at %}<span class="stamp s-completed">Signed</span>
           <a class="btn" href="{{ url_for('admin_signed_pdf', pid=p.id, iid=it.id) }}">Signed PDF</a>

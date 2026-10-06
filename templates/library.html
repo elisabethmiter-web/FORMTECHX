@@ -31,7 +31,7 @@
 <div class="forms-grid">
   {% for t in templates %}
   <article class="form-card">
-    <span class="kind">{{ t.file_name|filetype if t.kind in ('pdf','file') and t.file_name else {'pdf':'PDF document','file':'File','form':'Fillable form','specs':'Room-by-room spec form'}[t.kind] }}{% if t.field_count %} · {{ t.field_count }} field{{ 's' if t.field_count!=1 }}{% endif %}</span>
+    <span class="kind">{{ t.file_name|filetype if t.kind in ('pdf','file') and t.file_name else {'pdf':'PDF document','file':'File','form':'Fillable form','specs':'Room-by-room spec form','layout':'Layout approval','drawing':'Drawing approval'}[t.kind] }}{% if t.field_count %} · {{ t.field_count }} field{{ 's' if t.field_count!=1 }}{% endif %}</span>
     <h3>{{ t.name }}</h3>
     <span class="muted small">Added {{ t.created_at|day }}</span>
     <div class="actions">

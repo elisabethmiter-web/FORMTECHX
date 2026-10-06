@@ -3,10 +3,7 @@
 {% block wrapclass %}narrow{% endblock %}
 {% block content %}
 <div class="page-head"><div><a href="{{ url_for('dashboard') }}" class="small">← Packets</a><h1>New signing packet</h1>
-<p class="muted">Pick the forms this client needs to sign. They'll go through them in the order you tick them.</p></div></div>
-{% if not templates %}
-<section class="panel empty"><h2>Your library is empty</h2><p class="muted">Add at least one form before creating a packet.</p><a class="btn btn-primary" href="{{ url_for('library') }}">Go to form library</a></section>
-{% else %}
+<p class="muted">Pick saved forms, add one-off files, or ask for layout and drawing approvals. The client goes through them in order.</p></div></div>
 <form method="post" class="panel" id="packet-form" enctype="multipart/form-data">
   <input type="hidden" name="csrf" value="{{ csrf_token() }}">
   <div class="grid-2">
@@ -16,9 +13,10 @@
   <fieldset class="stack" style="border:0;padding:0;margin:0;gap:8px">
     <legend style="font-weight:500;margin-bottom:8px">Forms to include</legend>
     <div class="picker" id="picker">
+    {% if not templates %}<p class="muted small">Your library is empty. <a href="{{ url_for('library') }}">Add forms you reuse</a>, or use one-off files and approvals below.</p>{% endif %}
     {% for t in templates %}
       <label class="pick"><input type="checkbox" name="template_ids" value="{{ t.id }}" {{ 'checked' if t.id in selected }}>
-        <span><strong style="font-weight:600">{{ t.name }}</strong><br><span class="muted small">{{ t.file_name|filetype if t.kind in ('pdf','file') and t.file_name else {'pdf':'PDF document','file':'File','form':'Fillable form','specs':'Room-by-room spec form'}[t.kind] }}</span></span>
+        <span><strong style="font-weight:600">{{ t.name }}</strong><br><span class="muted small">{{ t.file_name|filetype if t.kind in ('pdf','file') and t.file_name else {'pdf':'PDF document','file':'File','form':'Fillable form','specs':'Room-by-room spec form','layout':'Layout approval','drawing':'Drawing approval'}[t.kind] }}</span></span>
         <span class="order"></span></label>
     {% endfor %}
     </div>
@@ -32,6 +30,41 @@
     </label>
     <div id="adhoc-list" class="adhoc-list"></div>
   </div>
+  <div class="stack approvals" style="gap:10px">
+    <div class="stack" style="gap:2px"><strong style="font-weight:500">Approvals <span class="hint">Optional</span></strong>
+      <span class="muted small">Ask the client to choose between two stone or seam layouts, or to approve a revised drawing. The pictures and drawings are for this packet only.</span></div>
+    <div id="approval-list" class="stack" style="gap:10px"></div>
+    <div class="row">
+      <button type="button" class="btn" id="add-layout">+ Layout approval (2 options)</button>
+      <button type="button" class="btn" id="add-drawing">+ Drawing approval (PDF)</button>
+    </div>
+  </div>
+  <template id="tpl-layout">
+    <fieldset class="approval-card" data-kind="layout">
+      <legend><span class="tag tag-layout">Layout approval</span></legend>
+      <input type="hidden" name="layout_ids" value="__N__">
+      <label for="layout_title___N__">Title <span class="hint">What the client sees</span><input id="layout_title___N__" type="text" name="layout_title___N__" value="Stone & seam layout approval"></label>
+      <div class="grid-2">
+        <label class="option-drop" for="layout_a___N__"><span>Option A picture</span><input id="layout_a___N__" type="file" name="layout_a___N__" accept="image/png,image/jpeg,image/webp,image/gif" required><img alt="" hidden></label>
+        <label class="option-drop" for="layout_b___N__"><span>Option B picture</span><input id="layout_b___N__" type="file" name="layout_b___N__" accept="image/png,image/jpeg,image/webp,image/gif" required><img alt="" hidden></label>
+      </div>
+      <label for="layout_notes___N__">Notes for the client <span class="hint">Optional: e.g. seam positions, slab numbers, what differs between A and B</span><textarea id="layout_notes___N__" name="layout_notes___N__" rows="2"></textarea></label>
+      <div><button type="button" class="btn btn-quiet btn-danger small remove-approval">Remove</button></div>
+    </fieldset>
+  </template>
+  <template id="tpl-drawing">
+    <fieldset class="approval-card" data-kind="drawing">
+      <legend><span class="tag tag-drawing">Drawing approval</span></legend>
+      <input type="hidden" name="drawing_ids" value="__N__">
+      <div class="grid-2">
+        <label for="drawing_title___N__">Title<input id="drawing_title___N__" type="text" name="drawing_title___N__" value="Drawing approval"></label>
+        <label for="drawing_rev___N__">Revision <span class="hint">Optional, e.g. Rev 3</span><input id="drawing_rev___N__" type="text" name="drawing_rev___N__"></label>
+      </div>
+      <label for="drawing_file___N__">Drawing (PDF)<input id="drawing_file___N__" type="file" name="drawing_file___N__" accept="application/pdf" required></label>
+      <label for="drawing_changes___N__">What changed in this version <span class="hint">Shown to the client above the drawing</span><textarea id="drawing_changes___N__" name="drawing_changes___N__" rows="3" placeholder="e.g. Moved sink 4&quot; left, added 1.5&quot; overhang on island"></textarea></label>
+      <div><button type="button" class="btn btn-quiet btn-danger small remove-approval">Remove</button></div>
+    </fieldset>
+  </template>
   <label for="message">Note to your client <span class="hint">Optional. Shown on the signing page{{ ' and in the email' if email_enabled }}.</span>
     <textarea id="message" name="message" rows="3" placeholder="Hi Sam, here are the onboarding documents we discussed.">{{ form.get('message','') }}</textarea></label>
   <label for="expiry_days" style="max-width:260px">Link expires after
@@ -43,9 +76,27 @@
     <span class="muted small">You'll copy the link and send it yourself. Add SMTP settings to email it from here.</span>{% endif %}
   </div>
 </form>
-{% endif %}
 {% endblock %}
 {% block scripts %}
+<script>
+(function(){
+  const list=document.getElementById('approval-list'); if(!list) return;
+  let n=0;
+  function add(kind){
+    if(list.querySelectorAll('.approval-card').length>=10) return;
+    const html=document.getElementById('tpl-'+kind).innerHTML.replaceAll('__N__', String(++n));
+    const wrap=document.createElement('div'); wrap.innerHTML=html; const card=wrap.firstElementChild;
+    card.querySelector('.remove-approval').addEventListener('click',()=>card.remove());
+    card.querySelectorAll('.option-drop input').forEach(inp=>inp.addEventListener('change',()=>{
+      const img=inp.parentElement.querySelector('img'); const f=inp.files[0];
+      if(f){img.src=URL.createObjectURL(f); img.hidden=false;} else img.hidden=true;
+    }));
+    list.appendChild(card); card.querySelector('input[type=text]').focus();
+  }
+  document.getElementById('add-layout').addEventListener('click',()=>add('layout'));
+  document.getElementById('add-drawing').addEventListener('click',()=>add('drawing'));
+})();
+</script>
 <script>
 (function(){
   const inp=document.getElementById('adhoc_files'), list=document.getElementById('adhoc-list'), drop=document.getElementById('adhoc-drop');

@@ -181,10 +181,72 @@ def _size(n):
     return f"{n / 1024 / 1024:.1f} MB" if n >= 1024 * 1024 else f"{max(1, round(n / 1024))} KB"
 
 
-def signed_document(out_path, source_pdf, body, fields, answers, sig_path, meta, specs=None, attachment=None):
+def _decision_box(approval):
+    good, bad = colors.HexColor("#e3f3ea"), colors.HexColor("#fbe7e5")
+    ink = colors.HexColor("#1d7a4f") if not approval["negative"] else colors.HexColor("#b3261e")
+    style = ParagraphStyle("dec", fontName="Helvetica-Bold", fontSize=13, leading=17, textColor=ink)
+    rows = [[_p("CLIENT DECISION", LABEL)], [Paragraph(escape(approval["label"]), style)]]
+    if approval.get("comments"):
+        rows.append([_p(("Reason / changes needed: " if approval["negative"] else "Comments: ") + approval["comments"])])
+    t = Table(rows, colWidths=[6.5 * inch])
+    t.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), bad if approval["negative"] else good),
+                           ("LEFTPADDING", (0, 0), (-1, -1), 12), ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+                           ("TOPPADDING", (0, 0), (0, 0), 10), ("BOTTOMPADDING", (0, -1), (-1, -1), 12)]))
+    return [Spacer(1, 12), t]
+
+
+def _layout_story(approval):
+    cfg = approval["config"]
+    out = []
+    if cfg.get("notes"):
+        out += [_p(cfg["notes"]), Spacer(1, 8)]
+    cells, caps = [], []
+    for o in approval["options"]:
+        key = o["label"][-1]
+        try:
+            img = ImageReader(o["path"])
+            iw, ih = img.getSize()
+            w = 3.1 * inch
+            h = w * ih / iw
+            if h > 3.6 * inch:
+                h = 3.6 * inch
+                w = h * iw / ih
+            cells.append(Image(o["path"], width=w, height=h))
+        except Exception:  # noqa: BLE001
+            cells.append(_p("(image could not be shown)", SMALL))
+        chosen = approval["decision"] == key
+        cap = ParagraphStyle("cap", fontName="Helvetica-Bold", fontSize=10.5, leading=13,
+                             textColor=colors.HexColor("#1d7a4f") if chosen else INK)
+        caps.append(Paragraph(escape(o["label"]) + ("  — SELECTED" if chosen else ""), cap))
+    t = Table([caps, cells], colWidths=[3.3 * inch, 3.3 * inch])
+    style = [("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 4),
+             ("BOX", (0, 0), (0, -1), 0.6, RULE), ("BOX", (1, 0), (1, -1), 0.6, RULE),
+             ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]
+    for i, o in enumerate(approval["options"]):
+        if approval["decision"] == o["label"][-1]:
+            style.append(("BOX", (i, 0), (i, -1), 2.2, colors.HexColor("#1d7a4f")))
+    t.setStyle(TableStyle(style))
+    out.append(t)
+    out += _decision_box(approval)
+    out += [Spacer(1, 8)] + [_p(f"{o['label']} file: {o['name']} · SHA-256 {o['sha256']}", SMALL)
+                             for o in approval["options"]]
+    return out
+
+
+def signed_document(out_path, source_pdf, body, fields, answers, sig_path, meta, specs=None, attachment=None,
+                    approval=None):
     story = [_p(meta["form_name"], H1),
              _p(f"Prepared by {meta['business']} for {meta['client_name']}", SMALL), Spacer(1, 10)]
-    if attachment:
+    if approval and approval["kind"] == "layout":
+        story += _layout_story(approval)
+    elif approval and approval["kind"] == "drawing":
+        cfg = approval["config"]
+        story += [_p(f"Drawing approval{(' · ' + cfg['revision']) if cfg.get('revision') else ''}. "
+                     f"The drawing appears on the preceding pages.", BODY)]
+        if cfg.get("changes"):
+            story += [_p("Changes in this revision", H2), _p(cfg["changes"])]
+        story += _decision_box(approval)
+    elif attachment:
         story += [_p(f"This page records the electronic signature for the attached file "
                      f"“{attachment['name']}” ({attachment['type']}, {_size(attachment['size'])}). "
                      f"The original file is kept with this record and its fingerprint is listed below, so any later "
@@ -223,6 +285,9 @@ def signed_document(out_path, source_pdf, body, fields, answers, sig_path, meta,
     if source_pdf:
         stamp_text = (f"Signed electronically by {meta['signer_name']} on "
                       f"{meta['signed_at'][:10]} · Confirmation {meta['packet_ref']}")
+        if approval and approval["kind"] == "drawing":
+            stamp_text = (f"{'CHANGES REQUESTED' if approval['negative'] else 'APPROVED'} by {meta['signer_name']} on "
+                          f"{meta['signed_at'][:10]} · Confirmation {meta['packet_ref']}")
         for page in PdfReader(source_pdf).pages:
             w, h = float(page.mediabox.width), float(page.mediabox.height)
             page.merge_page(_stamp(w, h, stamp_text))

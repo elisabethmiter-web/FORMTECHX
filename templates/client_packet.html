@@ -18,7 +18,7 @@
   <div class="doc-list">
   {% for it in items %}
     <div class="doc-row">
-      <div class="doc-main"><strong>{{ it.template_name }}</strong><span class="small muted">{{ 'Document to review and sign' if it.template_kind in ('pdf','file') else 'Form to fill in and sign' }}{% if it.template_kind=='file' %} · {{ it.file_name|filetype }}{% endif %}</span></div>
+      <div class="doc-main"><strong>{{ it.template_name }}</strong><span class="small muted">{{ {'layout':'Choose a layout option and sign','drawing':'Review the drawing and approve or request changes'}.get(it.template_kind, 'Document to review and sign' if it.template_kind in ('pdf','file') else 'Form to fill in and sign') }}{% if it.template_kind=='file' %} · {{ it.file_name|filetype }}{% endif %}</span></div>
       {% if it.signed_at %}<span class="stamp s-completed">Signed</span>
       {% else %}<a class="btn {{ 'btn-primary' if next_item and next_item.id==it.id }}" href="{{ url_for('client_form', token=p.token, iid=it.id) }}">{{ 'Start' if signed==0 and next_item.id==it.id else 'Open' }}</a>{% endif %}
     </div>

@@ -27,7 +27,7 @@
     {% for p in packets %}
       <tr class="clickable" onclick="location.href='{{ url_for('packet_detail', pid=p.id) }}'">
         <td><div class="client-cell"><a href="{{ url_for('packet_detail', pid=p.id) }}">{{ p.client_name }}</a><span class="muted small">{{ p.client_email }}</span></div></td>
-        <td><span class="stamp s-{{ p.state }}">{{ {'draft':'Draft','sent':'Sent','viewed':'Opened','in_progress':'In progress','completed':'Signed','expired':'Expired','voided':'Cancelled'}[p.state] }}</span></td>
+        <td><span class="stamp s-{{ p.state }}">{{ {'draft':'Draft','sent':'Sent','viewed':'Opened','in_progress':'In progress','completed':'Signed','expired':'Expired','voided':'Cancelled'}[p.state] }}</span>{% if p.refusals %}<div class="decision neg small" style="margin-top:4px">Changes requested</div>{% endif %}</td>
         <td><div class="progress"><div class="bar {{ 'done' if p.signed==p.total }}"><span style="width:{{ (100*p.signed/p.total)|round|int if p.total else 0 }}%"></span></div>{{ p.signed }} of {{ p.total }}</div></td>
         <td class="small">{{ p.sent_at|day }}</td>
         <td class="small muted">{{ (p.completed_at or p.first_viewed_at or p.sent_at or p.created_at)|day }}</td>

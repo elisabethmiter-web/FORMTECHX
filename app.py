@@ -98,7 +98,8 @@ CREATE TABLE IF NOT EXISTS packet_items (
   file_mime TEXT,
   requires_signature INTEGER NOT NULL DEFAULT 1,
   adhoc INTEGER NOT NULL DEFAULT 0,
-  downloaded_at TEXT
+  downloaded_at TEXT,
+  config_json TEXT DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY,
@@ -143,7 +144,8 @@ def _rebuild_if(conn, table, outdated):
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     _rebuild_if(conn, "templates", lambda sql: "'file'" not in sql or "file_mime" not in sql)
-    _rebuild_if(conn, "packet_items", lambda sql: "template_id INTEGER NOT NULL" in sql or "requires_signature" not in sql)
+    _rebuild_if(conn, "packet_items", lambda sql: "template_id INTEGER NOT NULL" in sql or "requires_signature" not in sql
+                or "config_json" not in sql)
     conn.executescript(SCHEMA)
     conn.commit()
     conn.close()
@@ -288,7 +290,10 @@ def dashboard():
             counts["viewed"] += 1
         elif st == "completed":
             counts["completed"] += 1
-        packets.append({**dict(p), "signed": signed, "total": total, "state": st})
+        refusals = [r for r in db().execute(
+            "SELECT template_kind, answers_json FROM packet_items WHERE packet_id=? AND template_kind IN "
+            "('layout','drawing') AND signed_at IS NOT NULL", (p["id"],)) if decision_is_negative(r[0], r[1])]
+        packets.append({**dict(p), "signed": signed, "total": total, "state": st, "refusals": len(refusals)})
     filt = request.args.get("show", "all")
     if filt == "open":
         packets = [p for p in packets if p["state"] in ("sent", "viewed", "in_progress", "draft")]
@@ -324,6 +329,79 @@ def save_upload(f):
     mime = "application/pdf" if head == b"%PDF-" else (mimetypes.guess_type(original)[0] or f.mimetype
                                                        or "application/octet-stream")
     return {"stored": stored, "name": original, "mime": mime, "sha256": sha256_file(path), "kind": kind}
+
+
+IMAGE_MIMES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+
+DECISIONS = {
+    "layout": {"A": "Proceed with Option A", "B": "Proceed with Option B", "none": "Refused both options"},
+    "drawing": {"approved": "Approved as drawn", "changes": "Changes requested"},
+}
+
+
+def decision_label(kind, answers):
+    try:
+        return DECISIONS[kind][(json.loads(answers) if isinstance(answers, str) else answers).get("decision")]
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return ""
+
+
+def decision_is_negative(kind, answers):
+    try:
+        d = (json.loads(answers) if isinstance(answers, str) else answers).get("decision")
+    except (TypeError, ValueError, AttributeError):
+        return False
+    return (kind, d) in (("layout", "none"), ("drawing", "changes"))
+
+
+app.jinja_env.globals.update(decision_label=decision_label, decision_is_negative=decision_is_negative)
+
+
+@app.template_filter("fromjson")
+def _fromjson(v):
+    try:
+        return json.loads(v) if v else {}
+    except ValueError:
+        return {}
+
+
+def collect_approvals():
+    """Read the layout/drawing approval blocks from the New packet form.
+    Returns a list of item dicts or raises ValueError with a message for the sender."""
+    out = []
+    for n in request.form.getlist("layout_ids")[:10]:
+        if not n.isdigit():
+            continue
+        title = request.form.get(f"layout_title_{n}", "").strip()[:120] or "Layout approval"
+        opts = []
+        for key in ("a", "b"):
+            f = request.files.get(f"layout_{key}_{n}")
+            if not f or not f.filename:
+                raise ValueError(f"“{title}”: add a picture for Option {key.upper()}.")
+            up = save_upload(f)
+            if up["mime"] not in IMAGE_MIMES:
+                raise ValueError(f"“{title}”: Option {key.upper()} must be a picture (JPG, PNG, WebP or GIF). "
+                                 f"iPhone HEIC photos need to be saved as JPG first.")
+            opts.append({"label": f"Option {key.upper()}", "file": up["stored"], "name": up["name"],
+                         "mime": up["mime"], "sha256": up["sha256"]})
+        out.append({"kind": "layout", "title": title, "file": None, "sha256": None,
+                    "file_name": None, "mime": None,
+                    "config": {"options": opts, "notes": request.form.get(f"layout_notes_{n}", "").strip()[:2000]}})
+    for n in request.form.getlist("drawing_ids")[:10]:
+        if not n.isdigit():
+            continue
+        title = request.form.get(f"drawing_title_{n}", "").strip()[:120] or "Drawing approval"
+        f = request.files.get(f"drawing_file_{n}")
+        if not f or not f.filename:
+            raise ValueError(f"“{title}”: add the drawing PDF.")
+        up = save_upload(f)
+        if up["kind"] != "pdf":
+            raise ValueError(f"“{title}”: the drawing must be a PDF that isn't password-protected.")
+        out.append({"kind": "drawing", "title": title, "file": up["stored"], "sha256": up["sha256"],
+                    "file_name": up["name"], "mime": up["mime"],
+                    "config": {"revision": request.form.get(f"drawing_rev_{n}", "").strip()[:60],
+                               "changes": request.form.get(f"drawing_changes_{n}", "").strip()[:3000]}})
+    return out
 
 
 INLINE_MIMES = {"application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp"}
@@ -468,8 +546,9 @@ def new_packet():
         email = request.form.get("client_email", "").strip()
         ids = [int(x) for x in request.form.getlist("template_ids") if x.isdigit()]
         adhoc = [f for f in request.files.getlist("adhoc_files") if f and f.filename]
-        if not name or "@" not in email or not (ids or adhoc):
-            flash("Add the client's name, a valid email, and at least one form or file.", "error")
+        has_approvals = bool(request.form.getlist("layout_ids") or request.form.getlist("drawing_ids"))
+        if not name or "@" not in email or not (ids or adhoc or has_approvals):
+            flash("Add the client's name, a valid email, and at least one form, file or approval.", "error")
             return render_template("packet_new.html", templates=templates, form=request.form,
                                    selected=ids)
         uploads = []
@@ -478,6 +557,7 @@ def new_packet():
                 up = save_upload(f)
                 up["sign"] = request.form.get(f"adhoc_sign_{i}") == "on"
                 uploads.append(up)
+            approvals = collect_approvals()
         except ValueError as exc:
             flash(str(exc), "error")
             return render_template("packet_new.html", templates=templates, form=request.form, selected=ids)
@@ -509,7 +589,16 @@ def new_packet():
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,1)",
                 (pid, None, len(ids) + k, os.path.splitext(up["name"])[0][:120] or up["name"], up["kind"],
                  up["stored"], up["sha256"], "[]", up["name"], up["mime"], 1 if up["sign"] else 0))
+        for k, ap in enumerate(approvals):
+            db().execute(
+                "INSERT INTO packet_items (packet_id, template_id, position, template_name, template_kind, "
+                "template_file, template_sha256, fields_json, file_name, file_mime, requires_signature, adhoc, "
+                "config_json) VALUES (?,?,?,?,?,?,?,?,?,?,1,1,?)",
+                (pid, None, len(ids) + len(uploads) + k, ap["title"], ap["kind"], ap["file"], ap["sha256"], "[]",
+                 ap["file_name"], ap["mime"], json.dumps(ap["config"])))
         parts = [f"{len(ids)} form(s) from library"] if ids else []
+        if approvals:
+            parts.append(f"{len(approvals)} approval(s)")
         if uploads:
             parts.append(f"{len(uploads)} one-off file(s)")
         log_event(pid, "created", ", ".join(parts))
@@ -620,6 +709,21 @@ def admin_original(pid, iid):
                        it["file_name"] or f"{it['template_name']}.pdf", force_download=True)
 
 
+@app.route("/packets/<int:pid>/items/<int:iid>/option/<int:k>")
+@login_required
+def admin_option(pid, iid, k):
+    it = db().execute("SELECT * FROM packet_items WHERE id=? AND packet_id=?", (iid, pid)).fetchone() or abort(404)
+    return send_option(it, k)
+
+
+def send_option(it, k):
+    opts = json.loads(it["config_json"] or "{}").get("options", [])
+    if it["template_kind"] != "layout" or not 0 <= k < len(opts):
+        abort(404)
+    o = opts[k]
+    return send_stored(o["file"], o["mime"], o["name"])
+
+
 @app.route("/packets/<int:pid>/audit.pdf")
 @login_required
 def admin_audit_pdf(pid):
@@ -703,6 +807,8 @@ def client_form(token, iid):
     body = it["template_body"] or ""
     is_specs = it["template_kind"] == "specs"
     spec_initial = None
+    approval = it["template_kind"] if it["template_kind"] in ("layout", "drawing") else None
+    config = json.loads(it["config_json"] or "{}")
 
     if request.method == "POST":
         for f in fields:
@@ -725,6 +831,15 @@ def client_form(token, iid):
                 errors["specs"] = err
             else:
                 answers = clean
+        if approval:
+            decision = request.form.get("decision", "")
+            comments = request.form.get("comments", "").strip()[:3000]
+            answers = {"decision": decision, "comments": comments}
+            if decision not in DECISIONS[approval]:
+                errors["decision"] = ("Choose Option A, Option B, or refuse both." if approval == "layout"
+                                      else "Choose whether you approve the drawing.")
+            elif decision_is_negative(approval, answers) and not comments:
+                errors["comments"] = "Tell us what needs to change so we can send a revised version."
         signer = request.form.get("signer_name", "").strip()[:200]
         sig_data = request.form.get("signature", "")
         if not signer:
@@ -752,7 +867,16 @@ def client_form(token, iid):
                     "client_email": p["client_email"], "signer_name": signer, "signed_at": ts,
                     "ip": client_ip(), "user_agent": request.headers.get("User-Agent", "")[:300],
                     "form_name": it["template_name"], "original_sha256": it["template_sha256"]}
-            source = os.path.join(UPLOAD_DIR, it["template_file"]) if it["template_kind"] == "pdf" else None
+            source = (os.path.join(UPLOAD_DIR, it["template_file"])
+                      if it["template_kind"] in ("pdf", "drawing") else None)
+            approval_info = None
+            if approval:
+                approval_info = {"kind": approval, "decision": answers["decision"],
+                                 "label": decision_label(approval, answers), "comments": answers["comments"],
+                                 "negative": decision_is_negative(approval, answers), "config": config}
+                if approval == "layout":
+                    approval_info["options"] = [dict(o, path=os.path.join(UPLOAD_DIR, o["file"]))
+                                                for o in config.get("options", [])]
             attachment = None
             if it["template_kind"] == "file":
                 fpath = os.path.join(UPLOAD_DIR, it["template_file"])
@@ -760,14 +884,16 @@ def client_form(token, iid):
                               "size": os.path.getsize(fpath), "sha256": it["template_sha256"],
                               "image": fpath if (it["file_mime"] or "").startswith("image/") else None}
             pdfgen.signed_document(out_path, source, body, fields, answers, sig_path, meta,
-                                   specs=answers if is_specs else None, attachment=attachment)
+                                   specs=answers if is_specs else None, attachment=attachment,
+                                   approval=approval_info)
             digest = sha256_file(out_path)
             db().execute(
                 "UPDATE packet_items SET answers_json=?, signer_name=?, signature_path=?, signed_at=?, "
                 "signed_pdf_path=?, signed_sha256=?, ip=?, user_agent=? WHERE id=? AND signed_at IS NULL",
                 (json.dumps(answers), signer, sig_name, ts, out_name, digest, meta["ip"], meta["user_agent"], iid))
             db().execute("UPDATE packets SET status='in_progress' WHERE id=? AND completed_at IS NULL", (p["id"],))
-            log_event(p["id"], "signed", it["template_name"])
+            log_event(p["id"], "signed", it["template_name"] + (f" — {decision_label(approval, answers)}"
+                                                                    if approval else ""))
             signed, total = packet_progress(p["id"])
             db().commit()
             if signed == total:
@@ -781,7 +907,7 @@ def client_form(token, iid):
 
     return render_template("client_form.html", p=p, it=it, fields=fields, items=items, errors=errors,
                            answers=answers, body=body, is_specs=is_specs, spec_initial=spec_initial,
-                           spec_def=forms.SPEC_FORM if is_specs else None,
+                           spec_def=forms.SPEC_FORM if is_specs else None, approval=approval, config=config,
                            signer_default=request.form.get("signer_name", p["client_name"]))
 
 
@@ -842,6 +968,15 @@ def client_doc(token, iid):
         db().commit()
     return send_stored(it["template_file"], it["file_mime"] or "application/pdf",
                        it["file_name"] or f"{it['template_name']}.pdf", force_download=download)
+
+
+@app.route("/s/<token>/option/<int:iid>/<int:k>")
+def client_option(token, iid, k):
+    p = load_packet(token)
+    if p["voided_at"]:
+        abort(410)
+    it = db().execute("SELECT * FROM packet_items WHERE id=? AND packet_id=?", (iid, p["id"])).fetchone() or abort(404)
+    return send_option(it, k)
 
 
 @app.route("/s/<token>/signed/<int:iid>")

@@ -12,7 +12,43 @@
 
 <form method="post" class="stack" id="sign-form" novalidate>
   <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-  {% if it.template_kind=='pdf' %}
+  {% if approval == 'layout' %}
+  <section class="panel">
+    <div class="panel-head"><h2>Choose a layout</h2><span class="muted small">Tap a picture to see it full size</span></div>
+    {% if config.notes %}<div class="note-box">{{ config.notes }}</div>{% endif %}
+    <div class="layout-options">
+    {% for o in config.options %}{% set key = 'AB'[loop.index0] %}
+      <label class="layout-option" for="decision_{{ key }}">
+        <a href="{{ url_for('client_option', token=p.token, iid=it.id, k=loop.index0) }}" target="_blank" rel="noopener" class="layout-img"><img src="{{ url_for('client_option', token=p.token, iid=it.id, k=loop.index0) }}" alt="{{ o.label }}"></a>
+        <span class="layout-choice"><input type="radio" id="decision_{{ key }}" name="decision" value="{{ key }}" {{ 'checked' if answers.get('decision')==key }}> <strong>Proceed with {{ o.label }}</strong></span>
+      </label>
+    {% endfor %}
+    </div>
+    <label class="refuse-choice" for="decision_none"><input type="radio" id="decision_none" name="decision" value="none" {{ 'checked' if answers.get('decision')=='none' }}> <span><strong>Refuse both options</strong><br><span class="muted small">We'll prepare a new layout based on your comments.</span></span></label>
+    {% if errors.get('decision') %}<span class="field-error">{{ errors.decision }}</span>{% endif %}
+    <div class="{{ 'has-error' if errors.get('comments') }}">
+      <label for="comments"><span id="comments-label">Comments <span class="hint">Optional</span></span><textarea id="comments" name="comments" rows="3">{{ answers.get('comments','') }}</textarea></label>
+      {% if errors.get('comments') %}<span class="field-error">{{ errors.comments }}</span>{% endif %}
+    </div>
+  </section>
+  {% elif approval == 'drawing' %}
+  <section class="panel">
+    <div class="panel-head"><h2>Review the drawing{% if config.revision %} · {{ config.revision }}{% endif %}</h2><a class="small" href="{{ url_for('client_doc', token=p.token, iid=it.id) }}" target="_blank" rel="noopener">Open in a new tab</a></div>
+    {% if config.changes %}<div class="note-box"><span class="eyebrow">What changed</span><div style="white-space:pre-wrap">{{ config.changes }}</div></div>{% endif %}
+    <div class="pdf-pages" id="pdf-pages" data-src="{{ url_for('client_doc', token=p.token, iid=it.id) }}" aria-label="{{ it.template_name }}">
+      <p class="muted small pdf-loading">Loading drawing…</p>
+    </div>
+    <div class="drawing-choices">
+      <label class="decision-choice pos" for="decision_approved"><input type="radio" id="decision_approved" name="decision" value="approved" {{ 'checked' if answers.get('decision')=='approved' }}> <span><strong>Approve the drawing as shown</strong></span></label>
+      <label class="decision-choice neg" for="decision_changes"><input type="radio" id="decision_changes" name="decision" value="changes" {{ 'checked' if answers.get('decision')=='changes' }}> <span><strong>Request changes</strong><br><span class="muted small">The drawing is not approved; we'll revise it.</span></span></label>
+    </div>
+    {% if errors.get('decision') %}<span class="field-error">{{ errors.decision }}</span>{% endif %}
+    <div class="{{ 'has-error' if errors.get('comments') }}">
+      <label for="comments"><span id="comments-label">Comments <span class="hint">Optional</span></span><textarea id="comments" name="comments" rows="3">{{ answers.get('comments','') }}</textarea></label>
+      {% if errors.get('comments') %}<span class="field-error">{{ errors.comments }}</span>{% endif %}
+    </div>
+  </section>
+  {% elif it.template_kind=='pdf' %}
   <section class="panel">
     <div class="panel-head"><h2>Read the document</h2><a class="small" href="{{ url_for('client_doc', token=p.token, iid=it.id) }}" target="_blank" rel="noopener">Open in a new tab</a></div>
     <div class="pdf-pages" id="pdf-pages" data-src="{{ url_for('client_doc', token=p.token, iid=it.id) }}" aria-label="{{ it.template_name }}">
@@ -93,7 +129,29 @@
 </form>
 {% endblock %}
 {% block scripts %}
-{% if it.template_kind=='pdf' %}
+{% if approval %}
+<script>
+(function(){
+  const lab=document.getElementById('comments-label'), ta=document.getElementById('comments');
+  const neg={{ ('none' if approval=='layout' else 'changes')|tojson }};
+  function upd(){ const v=(document.querySelector('input[name=decision]:checked')||{}).value;
+    const m=document.getElementById('submit-msg'); if(m) m.textContent='';
+    document.querySelectorAll('.layout-option,.refuse-choice,.decision-choice').forEach(l=>l.classList.toggle('picked', !!l.querySelector('input:checked')));
+    if(v===neg){ lab.innerHTML='What needs to change? <span class="hint">Required</span>'; ta.required=true; }
+    else { lab.innerHTML='Comments <span class="hint">Optional</span>'; ta.required=false; } }
+  document.querySelectorAll('input[name=decision]').forEach(r=>r.addEventListener('change',upd)); upd();
+  document.getElementById('sign-form').addEventListener('submit',e=>{
+    const v=(document.querySelector('input[name=decision]:checked')||{}).value;
+    let msg='';
+    if(!v) msg={{ ('Choose Option A, Option B, or refuse both.' if approval=='layout' else 'Choose whether you approve the drawing.')|tojson }};
+    else if(v===neg && !ta.value.trim()) msg='Tell us what needs to change so we can send a revised version.';
+    if(msg){ e.preventDefault(); e.stopImmediatePropagation(); const m=document.getElementById('submit-msg'); m.textContent=msg; m.style.color='var(--bad)';
+      (v? ta : document.querySelector('input[name=decision]')).focus(); }
+  });
+})();
+</script>
+{% endif %}
+{% if it.template_kind in ('pdf','drawing') %}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="{{ url_for('static', filename='pdfview.js') }}"></script>
 {% endif %}
