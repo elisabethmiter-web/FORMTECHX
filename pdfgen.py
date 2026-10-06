@@ -204,6 +204,8 @@ def _layout_story(approval):
     for o in approval["options"]:
         key = o["label"][-1]
         try:
+            if not o.get("path"):
+                raise ValueError("no picture")
             img = ImageReader(o["path"])
             iw, ih = img.getSize()
             w = 3.1 * inch
@@ -213,7 +215,7 @@ def _layout_story(approval):
                 w = h * iw / ih
             cells.append(Image(o["path"], width=w, height=h))
         except Exception:  # noqa: BLE001
-            cells.append(_p("(image could not be shown)", SMALL))
+            cells.append(_p(f"(picture not embedded: see file {o['name']})", SMALL))
         chosen = approval["decision"] == key
         cap = ParagraphStyle("cap", fontName="Helvetica-Bold", fontSize=10.5, leading=13,
                              textColor=colors.HexColor("#1d7a4f") if chosen else INK)

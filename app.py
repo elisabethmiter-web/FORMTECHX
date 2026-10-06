@@ -7,6 +7,12 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
+
+try:
+    import fcntl  # Linux/macOS servers
+except ImportError:  # Windows: run without the start-up lock
+    fcntl = None
 import mimetypes
 import os
 import secrets
@@ -36,6 +42,7 @@ BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
 LINK_DAYS = int(os.environ.get("LINK_EXPIRY_DAYS", "30"))
 
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB per upload
 app.config["SESSION_COOKIE_HTTPONLY"] = True
@@ -142,6 +149,18 @@ def _rebuild_if(conn, table, outdated):
 
 
 def init_db():
+    # Several server workers start at the same time; only one may upgrade the database.
+    if fcntl is None:
+        return _init_db_locked()
+    with open(os.path.join(DATA_DIR, ".dbinit.lock"), "w") as lockf:
+        fcntl.flock(lockf, fcntl.LOCK_EX)
+        try:
+            _init_db_locked()
+        finally:
+            fcntl.flock(lockf, fcntl.LOCK_UN)
+
+
+def _init_db_locked():
     conn = sqlite3.connect(DB_PATH)
     _rebuild_if(conn, "templates", lambda sql: "'file'" not in sql or "file_mime" not in sql)
     _rebuild_if(conn, "packet_items", lambda sql: "template_id INTEGER NOT NULL" in sql or "requires_signature" not in sql
@@ -332,6 +351,42 @@ def save_upload(f):
 
 
 IMAGE_MIMES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+DISPLAY_MAX_PX = 2400  # long edge of the copy shown to clients and placed in the signed PDF
+
+
+def make_display_copy(stored):
+    """Create a web/PDF-friendly JPEG of an uploaded picture: upright (phone rotation applied),
+    RGB, at most DISPLAY_MAX_PX on the long edge. Big camera photos and CAD exports otherwise make the
+    signed PDF slow and huge, which can time out the server. Returns the stored name of the copy."""
+    from PIL import Image, ImageOps
+    out = f"disp-{os.path.splitext(stored)[0]}.jpg"
+    out_path = os.path.join(UPLOAD_DIR, out)
+    if os.path.exists(out_path):
+        return out
+    with Image.open(os.path.join(UPLOAD_DIR, stored)) as im:
+        im.seek(0)  # first frame of GIF / multi-picture JPEG
+        im = ImageOps.exif_transpose(im)
+        if im.mode in ("RGBA", "LA", "P"):
+            im = im.convert("RGBA")
+            bg = Image.new("RGB", im.size, "white")
+            bg.paste(im, mask=im.split()[-1])
+            im = bg
+        else:
+            im = im.convert("RGB")
+        im.thumbnail((DISPLAY_MAX_PX, DISPLAY_MAX_PX))
+        im.save(out_path, "JPEG", quality=88, optimize=True)
+    return out
+
+
+def option_display(o):
+    """Display copy for a layout option (made on demand for packets created before copies existed)."""
+    if not o.get("display"):
+        try:
+            o["display"] = make_display_copy(o["file"])
+        except Exception:  # noqa: BLE001
+            app.logger.exception("Could not make display copy of %s", o.get("file"))
+            return o["file"], o["mime"]
+    return o["display"], "image/jpeg"
 
 DECISIONS = {
     "layout": {"A": "Proceed with Option A", "B": "Proceed with Option B", "none": "Refused both options"},
@@ -382,8 +437,14 @@ def collect_approvals():
             if up["mime"] not in IMAGE_MIMES:
                 raise ValueError(f"“{title}”: Option {key.upper()} must be a picture (JPG, PNG, WebP or GIF). "
                                  f"iPhone HEIC photos need to be saved as JPG first.")
+            try:
+                display = make_display_copy(up["stored"])
+            except Exception:  # noqa: BLE001
+                app.logger.exception("Unreadable layout picture %s", up["name"])
+                raise ValueError(f"“{title}”: the picture for Option {key.upper()} couldn't be opened. "
+                                 f"Save it again as JPG or PNG and re-upload it.")
             opts.append({"label": f"Option {key.upper()}", "file": up["stored"], "name": up["name"],
-                         "mime": up["mime"], "sha256": up["sha256"]})
+                         "mime": up["mime"], "sha256": up["sha256"], "display": display})
         out.append({"kind": "layout", "title": title, "file": None, "sha256": None,
                     "file_name": None, "mime": None,
                     "config": {"options": opts, "notes": request.form.get(f"layout_notes_{n}", "").strip()[:2000]}})
@@ -721,7 +782,10 @@ def send_option(it, k):
     if it["template_kind"] != "layout" or not 0 <= k < len(opts):
         abort(404)
     o = opts[k]
-    return send_stored(o["file"], o["mime"], o["name"])
+    if request.args.get("original") == "1":
+        return send_stored(o["file"], o["mime"], o["name"], force_download=True)
+    stored, mime = option_display(o)
+    return send_stored(stored, mime, o["name"])
 
 
 @app.route("/packets/<int:pid>/audit.pdf")
@@ -875,7 +939,7 @@ def client_form(token, iid):
                                  "label": decision_label(approval, answers), "comments": answers["comments"],
                                  "negative": decision_is_negative(approval, answers), "config": config}
                 if approval == "layout":
-                    approval_info["options"] = [dict(o, path=os.path.join(UPLOAD_DIR, o["file"]))
+                    approval_info["options"] = [dict(o, path=os.path.join(UPLOAD_DIR, option_display(o)[0]))
                                                 for o in config.get("options", [])]
             attachment = None
             if it["template_kind"] == "file":
@@ -883,9 +947,20 @@ def client_form(token, iid):
                 attachment = {"name": it["file_name"] or it["template_name"], "type": filetype_label(it["file_name"]),
                               "size": os.path.getsize(fpath), "sha256": it["template_sha256"],
                               "image": fpath if (it["file_mime"] or "").startswith("image/") else None}
-            pdfgen.signed_document(out_path, source, body, fields, answers, sig_path, meta,
-                                   specs=answers if is_specs else None, attachment=attachment,
-                                   approval=approval_info)
+            try:
+                pdfgen.signed_document(out_path, source, body, fields, answers, sig_path, meta,
+                                       specs=answers if is_specs else None, attachment=attachment,
+                                       approval=approval_info)
+            except Exception:  # noqa: BLE001
+                if not (approval_info and approval_info.get("options")):
+                    raise
+                # A picture the PDF library can't embed must not lose the client's decision:
+                # record it without the pictures (they stay available as files).
+                app.logger.exception("Layout pictures could not be embedded; signing without them")
+                for o in approval_info["options"]:
+                    o["path"] = None
+                pdfgen.signed_document(out_path, source, body, fields, answers, sig_path, meta,
+                                       approval=approval_info)
             digest = sha256_file(out_path)
             db().execute(
                 "UPDATE packet_items SET answers_json=?, signer_name=?, signature_path=?, signed_at=?, "
@@ -1001,6 +1076,16 @@ def not_found(_e):
 def bad_request(e):
     return render_template("error.html", title="Something went wrong",
                            message=getattr(e, "description", "Reload the page and try again.")), 400
+
+
+@app.errorhandler(500)
+def server_error(e):
+    ref = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    app.logger.error("Server error ref %s on %s %s: %s", ref, request.method, request.path,
+                     getattr(e, "original_exception", e), exc_info=getattr(e, "original_exception", None))
+    return render_template("error.html", title="Something went wrong on our side",
+                           message=f"Please try again in a moment. If it keeps happening, quote error "
+                                   f"reference {ref}."), 500
 
 
 @app.errorhandler(413)
