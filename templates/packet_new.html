@@ -7,7 +7,7 @@
 {% if not templates %}
 <section class="panel empty"><h2>Your library is empty</h2><p class="muted">Add at least one form before creating a packet.</p><a class="btn btn-primary" href="{{ url_for('library') }}">Go to form library</a></section>
 {% else %}
-<form method="post" class="panel" id="packet-form">
+<form method="post" class="panel" id="packet-form" enctype="multipart/form-data">
   <input type="hidden" name="csrf" value="{{ csrf_token() }}">
   <div class="grid-2">
     <label for="client_name">Client name<input id="client_name" type="text" name="client_name" value="{{ form.get('client_name','') }}" required></label>
@@ -18,11 +18,20 @@
     <div class="picker" id="picker">
     {% for t in templates %}
       <label class="pick"><input type="checkbox" name="template_ids" value="{{ t.id }}" {{ 'checked' if t.id in selected }}>
-        <span><strong style="font-weight:600">{{ t.name }}</strong><br><span class="muted small">{{ {'pdf':'PDF document','form':'Fillable form','specs':'Room-by-room spec form'}[t.kind] }}</span></span>
+        <span><strong style="font-weight:600">{{ t.name }}</strong><br><span class="muted small">{{ t.file_name|filetype if t.kind in ('pdf','file') and t.file_name else {'pdf':'PDF document','file':'File','form':'Fillable form','specs':'Room-by-room spec form'}[t.kind] }}</span></span>
         <span class="order"></span></label>
     {% endfor %}
     </div>
   </fieldset>
+  <div class="stack adhoc" style="gap:8px">
+    <div class="stack" style="gap:2px"><strong style="font-weight:500">One-off files <span class="hint">Optional</span></strong>
+      <span class="muted small">Files just for this client: quotes, drawings, photos, spreadsheets, any type. They're sent with this packet only and not saved to your library. Up to 50 MB in total.</span></div>
+    <label class="dropzone" for="adhoc_files" id="adhoc-drop">
+      <span><strong>Drop files here</strong> or click to choose</span>
+      <input id="adhoc_files" type="file" name="adhoc_files" multiple>
+    </label>
+    <div id="adhoc-list" class="adhoc-list"></div>
+  </div>
   <label for="message">Note to your client <span class="hint">Optional. Shown on the signing page{{ ' and in the email' if email_enabled }}.</span>
     <textarea id="message" name="message" rows="3" placeholder="Hi Sam, here are the onboarding documents we discussed.">{{ form.get('message','') }}</textarea></label>
   <label for="expiry_days" style="max-width:260px">Link expires after
@@ -37,6 +46,27 @@
 {% endif %}
 {% endblock %}
 {% block scripts %}
+<script>
+(function(){
+  const inp=document.getElementById('adhoc_files'), list=document.getElementById('adhoc-list'), drop=document.getElementById('adhoc-drop');
+  if(!inp) return;
+  const kb=n=>n>1048576?(n/1048576).toFixed(1)+' MB':Math.max(1,Math.round(n/1024))+' KB';
+  function paint(){
+    list.innerHTML='';
+    [...inp.files].forEach((f,i)=>{
+      const row=document.createElement('div'); row.className='adhoc-row';
+      row.innerHTML=`<div class="doc-main"><strong></strong><span class="small muted">${kb(f.size)}</span></div>
+        <label class="check small"><input type="checkbox" name="adhoc_sign_${i}" checked> Client signs this</label>`;
+      row.querySelector('strong').textContent=f.name; list.appendChild(row);
+    });
+    if(inp.files.length){const n=document.createElement('p');n.className='muted small';n.textContent='Untick "Client signs this" for files they only need to receive and download.';list.appendChild(n);}
+  }
+  inp.addEventListener('change',paint);
+  ['dragover','dragenter'].forEach(t=>drop.addEventListener(t,e=>{e.preventDefault();drop.classList.add('over');}));
+  ['dragleave','drop'].forEach(t=>drop.addEventListener(t,()=>drop.classList.remove('over')));
+  drop.addEventListener('drop',e=>{e.preventDefault();inp.files=e.dataTransfer.files;paint();});
+})();
+</script>
 <script>
 (function(){
   const picker=document.getElementById('picker'); if(!picker) return;

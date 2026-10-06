@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set labels = {'draft':'Draft','sent':'Sent','viewed':'Opened','in_progress':'In progress','completed':'Signed','expired':'Expired','voided':'Cancelled'} %}
-{% set ev = {'created':'Packet created','sent':'Sent','viewed':'Opened by client','signed':'Signed','completed':'All forms signed','voided':'Cancelled','extended':'Link extended','reminder':'Reminder','receipt_emailed':'Confirmation emailed','email_failed':'Email failed'} %}
+{% set ev = {'created':'Packet created','sent':'Sent','viewed':'Opened by client','signed':'Signed','completed':'Completed','voided':'Cancelled','extended':'Link extended','reminder':'Reminder','receipt_emailed':'Confirmation emailed','email_failed':'Email failed','downloaded':'Downloaded by client','confirmed':'Confirmed receipt'} %}
 {% block title %}{{ p.client_name }}{% endblock %}
 {% block content %}
 <div class="page-head">
@@ -33,16 +33,19 @@
 
 <div class="detail-grid">
   <section class="panel">
-    <div class="panel-head"><h2>Forms</h2><span class="muted small">{{ signed }} of {{ total }} signed</span></div>
+    <div class="panel-head"><h2>Forms and files</h2><span class="muted small">{{ signed }} of {{ total }} signed</span></div>
     <div class="doc-list">
     {% for it in items %}
       <div class="doc-row">
-        <div class="doc-main"><strong>{{ it.template_name }}</strong>
-          {% if it.signed_at %}<span class="small muted">Signed by {{ it.signer_name }} · {{ it.signed_at|when }}</span>
-          {% else %}<span class="small muted">{{ {'pdf':'PDF document','form':'Fillable form','specs':'Room-by-room spec form'}[it.template_kind] }} · not signed yet</span>{% endif %}
+        <div class="doc-main"><strong>{{ it.template_name }}{% if it.adhoc %} <span class="tag">One-off</span>{% endif %}</strong>
+          {% if not it.requires_signature %}<span class="small muted">{{ it.file_name|filetype if it.template_kind in ('pdf','file') and it.file_name else {'pdf':'PDF document','file':'File','form':'Fillable form','specs':'Room-by-room spec form'}[it.template_kind] }} · for the client's records · {{ 'downloaded ' ~ (it.downloaded_at|when) if it.downloaded_at else 'not downloaded yet' }}</span>
+          {% elif it.signed_at %}<span class="small muted">Signed by {{ it.signer_name }} · {{ it.signed_at|when }}</span>
+          {% else %}<span class="small muted">{{ it.file_name|filetype if it.template_kind in ('pdf','file') and it.file_name else {'pdf':'PDF document','file':'File','form':'Fillable form','specs':'Room-by-room spec form'}[it.template_kind] }} · not signed yet</span>{% endif %}
         </div>
-        {% if it.signed_at %}<span class="stamp s-completed">Signed</span>
-          <a class="btn" href="{{ url_for('admin_signed_pdf', pid=p.id, iid=it.id) }}">Download</a>
+        {% if it.template_file and it.template_kind in ('pdf','file') %}<a class="btn btn-quiet" href="{{ url_for('admin_original', pid=p.id, iid=it.id) }}">Original</a>{% endif %}
+        {% if not it.requires_signature %}<span class="stamp s-{{ 'completed' if it.downloaded_at else 'sent' }}">{{ 'Received' if it.downloaded_at else 'To review' }}</span>
+        {% elif it.signed_at %}<span class="stamp s-completed">Signed</span>
+          <a class="btn" href="{{ url_for('admin_signed_pdf', pid=p.id, iid=it.id) }}">Signed PDF</a>
         {% else %}<span class="stamp s-{{ 'viewed' if p.first_viewed_at else 'sent' }}">Waiting</span>{% endif %}
       </div>
     {% endfor %}

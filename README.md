@@ -10,6 +10,15 @@ A small web app for sending forms to clients for e-signature and getting confirm
 
 Signatures are "simple electronic signatures" (drawn or typed, plus consent and an audit record). That's generally fine for engagement letters, intake and consent forms. For documents that legally need identity verification or a qualified signature, use a dedicated provider.
 
+## One-off files and any file type
+
+- **Form library** accepts any file type (PDF, Word, Excel, images, CAD, ZIP...), up to 50 MB.
+- **New packet → One-off files**: drop in files just for this client. They're sent with that packet only and never saved to your library.
+- For each one-off file, choose **Client signs this** or leave it unticked so the file is just for their records (they download it; you see when they did).
+- PDFs are shown on screen and stamped with the signature. Other files are downloaded by the client to review; their signed record is a signature page with the file's name and SHA-256 fingerprint (images are shown on that page). The original file is kept with the packet and attached to the completion email.
+- A packet with only files to review (nothing to sign) completes when the client clicks **Confirm I've received these files**.
+- Only PDFs and common images open in the browser; every other type is always sent as a download, so an uploaded file can never run as a web page.
+
 ## Plumbing & appliance spec form
 
 In **Form library**, click **Add plumbing & appliance spec form** once. Then include it in any packet like your other forms. The client adds rooms (up to 20), and in each room adds plumbing fixtures and appliances (sink, faucet, toilet, stove, dishwasher and more) with make and model, plus optional finish, quantity and notes. They sign at the bottom, and the signed PDF lists every room as a table. The item list is in `forms.py` (`CATEGORIES`).

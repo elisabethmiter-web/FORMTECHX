@@ -236,3 +236,18 @@ dl.meta dd { margin: 0; font-variant-numeric: tabular-nums; min-width: 0; overfl
 }
 .spec-add-room-wrap { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .spec-notes { max-width: 100%; }
+/* ===================== one-off files ===================== */
+.dropzone { border: 1.5px dashed var(--muted); border-radius: var(--radius); padding: 22px 16px; display: grid; justify-items: center; gap: 4px; text-align: center; cursor: pointer; font-weight: 400; color: var(--muted); background: var(--bg); position: relative; }
+.dropzone strong { color: var(--ink); }
+.dropzone.over, .dropzone:hover { border-color: var(--accent); color: var(--accent); }
+.dropzone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.adhoc-list { display: grid; gap: 6px; }
+.adhoc-row { display: flex; align-items: center; gap: 12px; justify-content: space-between; padding: 10px 12px; border: 1px solid var(--rule); border-radius: 6px; flex-wrap: wrap; }
+.adhoc-row .doc-main { min-width: 0; overflow-wrap: anywhere; }
+.adhoc-row .check { white-space: nowrap; }
+.tag { font: 600 0.7rem var(--font-body); text-transform: uppercase; letter-spacing: .06em; color: var(--warn); background: var(--warn-soft); padding: 2px 7px; border-radius: 999px; vertical-align: middle; margin-left: 6px; }
+.file-card { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border: 1px solid var(--rule); border-radius: 8px; background: var(--bg); flex-wrap: wrap; }
+.file-card svg { color: var(--accent); flex: none; }
+.file-card .doc-main { flex: 1; min-width: 160px; overflow-wrap: anywhere; }
+.file-preview { max-width: 100%; max-height: 70vh; border: 1px solid var(--rule); border-radius: 6px; display: block; margin: 0 auto; }
+.adhoc-row .doc-main { display: grid; gap: 1px; }

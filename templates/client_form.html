@@ -19,6 +19,19 @@
       <p class="muted small pdf-loading">Loading document…</p>
     </div>
   </section>
+  {% elif it.template_kind=='file' %}
+  <section class="panel">
+    <div class="panel-head"><h2>Review the file</h2></div>
+    {% if (it.file_mime or '').startswith('image/') and it.file_mime in ('image/png','image/jpeg','image/gif','image/webp') %}
+      <img class="file-preview" src="{{ url_for('client_doc', token=p.token, iid=it.id) }}" alt="{{ it.file_name }}">
+    {% endif %}
+    <div class="file-card">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>
+      <div class="doc-main"><strong>{{ it.file_name }}</strong><span class="small muted">{{ it.file_name|filetype }}</span></div>
+      <a class="btn" href="{{ url_for('client_doc', token=p.token, iid=it.id, download=1) }}">Download to review</a>
+    </div>
+    <p class="muted small">Open the file on your device to read it, then sign below. Your signature is recorded against this exact file.</p>
+  </section>
   {% elif is_specs %}
   <section class="panel">
     <div id="spec-form"></div>

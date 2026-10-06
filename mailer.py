@@ -1,4 +1,5 @@
 """Optional email via SMTP. If SMTP_HOST isn't set, the app works link-only."""
+import mimetypes
 import os
 import smtplib
 import ssl
@@ -77,6 +78,8 @@ def send_completed(to, client_name, business, ref, files, admin_link=None):
     msg["To"] = to
     msg.set_content(body)
     for name, path in files:
+        mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        maintype, subtype = mime.split("/", 1)
         with open(path, "rb") as fh:
-            msg.add_attachment(fh.read(), maintype="application", subtype="pdf", filename=name)
+            msg.add_attachment(fh.read(), maintype=maintype, subtype=subtype, filename=name)
     _send(msg)

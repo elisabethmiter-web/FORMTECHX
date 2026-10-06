@@ -7,6 +7,7 @@ import base64
 import hashlib
 import hmac
 import json
+import mimetypes
 import os
 import secrets
 import sqlite3
@@ -36,7 +37,7 @@ LINK_DAYS = int(os.environ.get("LINK_EXPIRY_DAYS", "30"))
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
-app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024  # 20 MB uploads
+app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB per upload
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 if os.environ.get("HTTPS", "1") == "1" and BASE_URL.startswith("https"):
@@ -50,13 +51,15 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS templates (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('pdf','form','specs')),
+  kind TEXT NOT NULL CHECK (kind IN ('pdf','file','form','specs')),
   description TEXT DEFAULT '',
   file_path TEXT,
   file_sha256 TEXT,
   fields_json TEXT DEFAULT '[]',
   archived INTEGER DEFAULT 0,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  file_name TEXT,
+  file_mime TEXT
 );
 CREATE TABLE IF NOT EXISTS packets (
   id INTEGER PRIMARY KEY,
@@ -75,7 +78,7 @@ CREATE TABLE IF NOT EXISTS packets (
 CREATE TABLE IF NOT EXISTS packet_items (
   id INTEGER PRIMARY KEY,
   packet_id INTEGER NOT NULL REFERENCES packets(id),
-  template_id INTEGER NOT NULL REFERENCES templates(id),
+  template_id INTEGER REFERENCES templates(id),
   position INTEGER NOT NULL,
   template_name TEXT NOT NULL,
   template_kind TEXT NOT NULL,
@@ -90,7 +93,12 @@ CREATE TABLE IF NOT EXISTS packet_items (
   signed_pdf_path TEXT,
   signed_sha256 TEXT,
   ip TEXT,
-  user_agent TEXT
+  user_agent TEXT,
+  file_name TEXT,
+  file_mime TEXT,
+  requires_signature INTEGER NOT NULL DEFAULT 1,
+  adhoc INTEGER NOT NULL DEFAULT 0,
+  downloaded_at TEXT
 );
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY,
@@ -118,15 +126,26 @@ def close_db(_exc):
         conn.close()
 
 
+def _rebuild_if(conn, table, outdated):
+    """Upgrade a table from an older version of the app, keeping its rows."""
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+    if not row or not outdated(row[0]):
+        return
+    old_cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.executescript(f"ALTER TABLE {table} RENAME TO {table}_old;")
+    conn.executescript(SCHEMA)
+    new_cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    cols = ", ".join(c for c in old_cols if c in new_cols)
+    conn.executescript(f"INSERT INTO {table} ({cols}) SELECT {cols} FROM {table}_old; DROP TABLE {table}_old;")
+
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
-    old = conn.execute("SELECT sql FROM sqlite_master WHERE name='templates'").fetchone()
-    if old and "'specs'" not in old[0]:
-        # Older database: widen the allowed form kinds to include the spec form.
-        conn.executescript("ALTER TABLE templates RENAME TO templates_old;")
-        conn.executescript(SCHEMA)
-        conn.executescript("INSERT INTO templates SELECT * FROM templates_old; DROP TABLE templates_old;")
+    _rebuild_if(conn, "templates", lambda sql: "'file'" not in sql or "file_mime" not in sql)
+    _rebuild_if(conn, "packet_items", lambda sql: "template_id INTEGER NOT NULL" in sql or "requires_signature" not in sql)
     conn.executescript(SCHEMA)
+    conn.commit()
     conn.close()
 
 
@@ -237,7 +256,8 @@ def logout():
 # ---------------------------------------------------------------- packet status
 def packet_progress(packet_id):
     row = db().execute(
-        "SELECT COUNT(*) total, SUM(signed_at IS NOT NULL) signed FROM packet_items WHERE packet_id=?",
+        "SELECT COUNT(*) total, SUM(signed_at IS NOT NULL) signed FROM packet_items "
+        "WHERE packet_id=? AND requires_signature=1",
         (packet_id,)).fetchone()
     return row["signed"] or 0, row["total"] or 0
 
@@ -288,34 +308,67 @@ def library():
     return render_template("library.html", templates=templates)
 
 
+def save_upload(f):
+    """Store any uploaded file. Returns dict with stored name, original name, mime, sha256 and kind
+    ('pdf' for a readable PDF we can stamp, 'file' for everything else)."""
+    original = os.path.basename(f.filename or "file")[:200] or "file"
+    stored = f"{secrets.token_hex(8)}-{secure_filename(original) or 'file'}"
+    path = os.path.join(UPLOAD_DIR, stored)
+    f.save(path)
+    if os.path.getsize(path) == 0:
+        os.remove(path)
+        raise ValueError(f"“{original}” is empty.")
+    with open(path, "rb") as fh:
+        head = fh.read(5)
+    kind = "pdf" if head == b"%PDF-" and pdfgen.is_readable_pdf(path) else "file"
+    mime = "application/pdf" if head == b"%PDF-" else (mimetypes.guess_type(original)[0] or f.mimetype
+                                                       or "application/octet-stream")
+    return {"stored": stored, "name": original, "mime": mime, "sha256": sha256_file(path), "kind": kind}
+
+
+INLINE_MIMES = {"application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp"}
+
+
+def send_stored(stored, mime, download_name, force_download=False):
+    """Serve an uploaded file. Only PDFs and common images are shown in the browser; everything
+    else is sent as a download so it can never run as a web page."""
+    inline = mime in INLINE_MIMES and not force_download
+    return send_file(os.path.join(UPLOAD_DIR, stored), mimetype=mime if inline else "application/octet-stream",
+                     as_attachment=not inline, download_name=download_name)
+
+
+@app.template_filter("filetype")
+def filetype_label(name, mime=""):
+    ext = os.path.splitext(name or "")[1].lower().lstrip(".")
+    labels = {"pdf": "PDF", "doc": "Word document", "docx": "Word document", "xls": "Excel spreadsheet",
+              "xlsx": "Excel spreadsheet", "csv": "Spreadsheet (CSV)", "ppt": "PowerPoint", "pptx": "PowerPoint",
+              "jpg": "Image", "jpeg": "Image", "png": "Image", "gif": "Image", "webp": "Image", "heic": "Image",
+              "txt": "Text file", "zip": "ZIP archive", "dwg": "CAD drawing", "dxf": "CAD drawing",
+              "rtf": "Text document", "odt": "Document", "pages": "Pages document", "numbers": "Numbers spreadsheet"}
+    return labels.get(ext, (ext.upper() + " file") if ext else "File")
+
+
 @app.route("/library/upload", methods=["POST"])
 @login_required
 def upload_pdf():
     f = request.files.get("file")
     name = request.form.get("name", "").strip()
     if not f or not f.filename:
-        flash("Choose a PDF file to upload.", "error")
+        flash("Choose a file to upload.", "error")
         return redirect(url_for("library"))
-    head = f.stream.read(5)
-    f.stream.seek(0)
-    if head != b"%PDF-":
-        flash("That file isn't a PDF. Save it as PDF first, then upload it.", "error")
-        return redirect(url_for("library"))
-    fname = f"{secrets.token_hex(8)}-{secure_filename(f.filename) or 'form.pdf'}"
-    path = os.path.join(UPLOAD_DIR, fname)
-    f.save(path)
-    if not pdfgen.is_readable_pdf(path):
-        os.remove(path)
-        flash("That PDF couldn't be read (it may be password-protected).", "error")
+    try:
+        up = save_upload(f)
+    except ValueError as exc:
+        flash(str(exc), "error")
         return redirect(url_for("library"))
     fields = parse_fields_from_request()
     db().execute(
-        "INSERT INTO templates (name, kind, description, file_path, file_sha256, fields_json, created_at) "
-        "VALUES (?,?,?,?,?,?,?)",
-        (name or os.path.splitext(f.filename)[0], "pdf", request.form.get("description", "").strip(),
-         fname, sha256_file(path), json.dumps(fields), now()))
+        "INSERT INTO templates (name, kind, description, file_path, file_sha256, fields_json, created_at, "
+        "file_name, file_mime) VALUES (?,?,?,?,?,?,?,?,?)",
+        (name or os.path.splitext(up["name"])[0], up["kind"], request.form.get("description", "").strip(),
+         up["stored"], up["sha256"], json.dumps(fields), now(), up["name"], up["mime"]))
     db().commit()
-    flash("Form added to your library.", "ok")
+    flash("Added to your library.", "ok")
     return redirect(url_for("library"))
 
 
@@ -402,7 +455,7 @@ def template_file(tid):
     t = db().execute("SELECT * FROM templates WHERE id=?", (tid,)).fetchone() or abort(404)
     if not t["file_path"]:
         abort(404)
-    return send_file(os.path.join(UPLOAD_DIR, t["file_path"]), mimetype="application/pdf")
+    return send_stored(t["file_path"], t["file_mime"] or "application/pdf", t["file_name"] or f"{t['name']}.pdf")
 
 
 # ---------------------------------------------------------------- admin: packets
@@ -414,10 +467,20 @@ def new_packet():
         name = request.form.get("client_name", "").strip()
         email = request.form.get("client_email", "").strip()
         ids = [int(x) for x in request.form.getlist("template_ids") if x.isdigit()]
-        if not name or "@" not in email or not ids:
-            flash("Add the client's name, a valid email, and at least one form.", "error")
+        adhoc = [f for f in request.files.getlist("adhoc_files") if f and f.filename]
+        if not name or "@" not in email or not (ids or adhoc):
+            flash("Add the client's name, a valid email, and at least one form or file.", "error")
             return render_template("packet_new.html", templates=templates, form=request.form,
                                    selected=ids)
+        uploads = []
+        try:
+            for i, f in enumerate(adhoc):
+                up = save_upload(f)
+                up["sign"] = request.form.get(f"adhoc_sign_{i}") == "on"
+                uploads.append(up)
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return render_template("packet_new.html", templates=templates, form=request.form, selected=ids)
         token = secrets.token_urlsafe(24)
         days = int(request.form.get("expiry_days") or LINK_DAYS)
         expires = (datetime.now(timezone.utc) + timedelta(days=days)).replace(microsecond=0).isoformat()
@@ -434,10 +497,22 @@ def new_packet():
             # Snapshot the template so later edits never change what the client signed.
             db().execute(
                 "INSERT INTO packet_items (packet_id, template_id, position, template_name, template_kind, "
-                "template_file, template_sha256, fields_json, template_body) VALUES (?,?,?,?,?,?,?,?,?)",
+                "template_file, template_sha256, fields_json, template_body, file_name, file_mime) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (pid, tid, pos, t["name"], t["kind"], t["file_path"], t["file_sha256"], t["fields_json"],
-                 t["description"] if t["kind"] == "form" else ""))
-        log_event(pid, "created", f"{len(ids)} form(s)")
+                 t["description"] if t["kind"] == "form" else "", t["file_name"], t["file_mime"]))
+        # One-off files: attached to this packet only, never added to the library.
+        for k, up in enumerate(uploads):
+            db().execute(
+                "INSERT INTO packet_items (packet_id, template_id, position, template_name, template_kind, "
+                "template_file, template_sha256, fields_json, file_name, file_mime, requires_signature, adhoc) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,1)",
+                (pid, None, len(ids) + k, os.path.splitext(up["name"])[0][:120] or up["name"], up["kind"],
+                 up["stored"], up["sha256"], "[]", up["name"], up["mime"], 1 if up["sign"] else 0))
+        parts = [f"{len(ids)} form(s) from library"] if ids else []
+        if uploads:
+            parts.append(f"{len(uploads)} one-off file(s)")
+        log_event(pid, "created", ", ".join(parts))
         db().commit()
         if request.form.get("action") == "send_email" and mailer.enabled():
             return send_packet_email(pid)
@@ -535,6 +610,16 @@ def admin_signed_pdf(pid, iid):
                      download_name=f"{secure_filename(it['template_name'])}-signed.pdf")
 
 
+@app.route("/packets/<int:pid>/items/<int:iid>/original")
+@login_required
+def admin_original(pid, iid):
+    it = db().execute("SELECT * FROM packet_items WHERE id=? AND packet_id=?", (iid, pid)).fetchone() or abort(404)
+    if not it["template_file"]:
+        abort(404)
+    return send_stored(it["template_file"], it["file_mime"] or "application/pdf",
+                       it["file_name"] or f"{it['template_name']}.pdf", force_download=True)
+
+
 @app.route("/packets/<int:pid>/audit.pdf")
 @login_required
 def admin_audit_pdf(pid):
@@ -580,9 +665,26 @@ def client_packet(token):
     signed, total = packet_progress(p["id"])
     if p["completed_at"]:
         return redirect(url_for("client_done", token=token))
-    next_item = next((i for i in items if not i["signed_at"]), None)
-    return render_template("client_packet.html", p=p, items=items, signed=signed, total=total,
-                           next_item=next_item)
+    sign_items = [i for i in items if i["requires_signature"]]
+    info_items = [i for i in items if not i["requires_signature"]]
+    next_item = next((i for i in sign_items if not i["signed_at"]), None)
+    return render_template("client_packet.html", p=p, items=sign_items, info_items=info_items, signed=signed,
+                           total=total, next_item=next_item)
+
+
+@app.route("/s/<token>/confirm", methods=["POST"])
+def client_confirm(token):
+    """For packets that only contain files to review (nothing to sign): the client confirms receipt."""
+    p = load_packet(token)
+    blocked = client_block(p)
+    if blocked:
+        return blocked
+    signed, total = packet_progress(p["id"])
+    if total == 0 and not p["completed_at"]:
+        log_event(p["id"], "confirmed", "client confirmed receipt of the files")
+        db().commit()
+        complete_packet(p["id"], reason="client confirmed receipt")
+    return redirect(url_for("client_done", token=token))
 
 
 @app.route("/s/<token>/f/<int:iid>", methods=["GET", "POST"])
@@ -592,11 +694,11 @@ def client_form(token, iid):
     if blocked:
         return blocked
     it = db().execute("SELECT * FROM packet_items WHERE id=? AND packet_id=?", (iid, p["id"])).fetchone() or abort(404)
-    if it["signed_at"]:
+    if it["signed_at"] or not it["requires_signature"]:
         return redirect(url_for("client_packet", token=token))
     fields = json.loads(it["fields_json"] or "[]")
-    items = db().execute("SELECT id, template_name, signed_at FROM packet_items WHERE packet_id=? ORDER BY position",
-                         (p["id"],)).fetchall()
+    items = db().execute("SELECT id, template_name, signed_at FROM packet_items WHERE packet_id=? "
+                         "AND requires_signature=1 ORDER BY position", (p["id"],)).fetchall()
     errors, answers = {}, {}
     body = it["template_body"] or ""
     is_specs = it["template_kind"] == "specs"
@@ -650,9 +752,15 @@ def client_form(token, iid):
                     "client_email": p["client_email"], "signer_name": signer, "signed_at": ts,
                     "ip": client_ip(), "user_agent": request.headers.get("User-Agent", "")[:300],
                     "form_name": it["template_name"], "original_sha256": it["template_sha256"]}
-            source = os.path.join(UPLOAD_DIR, it["template_file"]) if it["template_file"] else None
+            source = os.path.join(UPLOAD_DIR, it["template_file"]) if it["template_kind"] == "pdf" else None
+            attachment = None
+            if it["template_kind"] == "file":
+                fpath = os.path.join(UPLOAD_DIR, it["template_file"])
+                attachment = {"name": it["file_name"] or it["template_name"], "type": filetype_label(it["file_name"]),
+                              "size": os.path.getsize(fpath), "sha256": it["template_sha256"],
+                              "image": fpath if (it["file_mime"] or "").startswith("image/") else None}
             pdfgen.signed_document(out_path, source, body, fields, answers, sig_path, meta,
-                                   specs=answers if is_specs else None)
+                                   specs=answers if is_specs else None, attachment=attachment)
             digest = sha256_file(out_path)
             db().execute(
                 "UPDATE packet_items SET answers_json=?, signer_name=?, signature_path=?, signed_at=?, "
@@ -665,7 +773,8 @@ def client_form(token, iid):
             if signed == total:
                 complete_packet(p["id"])
                 return redirect(url_for("client_done", token=token))
-            nxt = db().execute("SELECT id FROM packet_items WHERE packet_id=? AND signed_at IS NULL ORDER BY position",
+            nxt = db().execute("SELECT id FROM packet_items WHERE packet_id=? AND signed_at IS NULL "
+                               "AND requires_signature=1 ORDER BY position",
                                (p["id"],)).fetchone()
             flash(f"“{it['template_name']}” signed.", "ok")
             return redirect(url_for("client_form", token=token, iid=nxt["id"]))
@@ -683,16 +792,19 @@ def packet_ref(p):
 app.jinja_env.globals["packet_ref"] = packet_ref
 
 
-def complete_packet(pid):
+def complete_packet(pid, reason="all forms signed"):
     db().execute("UPDATE packets SET status='completed', completed_at=? WHERE id=? AND completed_at IS NULL",
                  (now(), pid))
-    log_event(pid, "completed", "all forms signed")
+    log_event(pid, "completed", reason)
     db().commit()
     if mailer.enabled():
         p = db().execute("SELECT * FROM packets WHERE id=?", (pid,)).fetchone()
         items = db().execute("SELECT * FROM packet_items WHERE packet_id=? ORDER BY position", (pid,)).fetchall()
         files = [(f"{secure_filename(i['template_name'])}-signed.pdf", os.path.join(SIGNED_DIR, i["signed_pdf_path"]))
-                 for i in items]
+                 for i in items if i["signed_pdf_path"]]
+        # Non-PDF originals (Word, Excel, images...) go along so everyone has the actual files.
+        files += [(i["file_name"], os.path.join(UPLOAD_DIR, i["template_file"])) for i in items
+                  if i["template_kind"] == "file" or (not i["requires_signature"] and i["template_file"])]
         try:
             mailer.send_completed(p["client_email"], p["client_name"], BUSINESS_NAME, packet_ref(p), files,
                                   admin_link=None)
@@ -723,7 +835,13 @@ def client_doc(token, iid):
     it = db().execute("SELECT * FROM packet_items WHERE id=? AND packet_id=?", (iid, p["id"])).fetchone() or abort(404)
     if not it["template_file"]:
         abort(404)
-    return send_file(os.path.join(UPLOAD_DIR, it["template_file"]), mimetype="application/pdf")
+    download = request.args.get("download") == "1"
+    if download and not it["downloaded_at"]:
+        db().execute("UPDATE packet_items SET downloaded_at=? WHERE id=?", (now(), iid))
+        log_event(p["id"], "downloaded", it["file_name"] or it["template_name"])
+        db().commit()
+    return send_stored(it["template_file"], it["file_mime"] or "application/pdf",
+                       it["file_name"] or f"{it['template_name']}.pdf", force_download=download)
 
 
 @app.route("/s/<token>/signed/<int:iid>")

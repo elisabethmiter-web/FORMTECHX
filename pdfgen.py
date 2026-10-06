@@ -177,10 +177,33 @@ def _spec_tables(specs):
     return out
 
 
-def signed_document(out_path, source_pdf, body, fields, answers, sig_path, meta, specs=None):
+def _size(n):
+    return f"{n / 1024 / 1024:.1f} MB" if n >= 1024 * 1024 else f"{max(1, round(n / 1024))} KB"
+
+
+def signed_document(out_path, source_pdf, body, fields, answers, sig_path, meta, specs=None, attachment=None):
     story = [_p(meta["form_name"], H1),
              _p(f"Prepared by {meta['business']} for {meta['client_name']}", SMALL), Spacer(1, 10)]
-    if specs:
+    if attachment:
+        story += [_p(f"This page records the electronic signature for the attached file "
+                     f"“{attachment['name']}” ({attachment['type']}, {_size(attachment['size'])}). "
+                     f"The original file is kept with this record and its fingerprint is listed below, so any later "
+                     f"change to the file can be detected.", BODY)]
+        if attachment.get("image"):
+            try:
+                img = ImageReader(attachment["image"])
+                iw, ih = img.getSize()
+                w = min(6.5 * inch, iw)
+                h = w * ih / iw
+                if h > 5.5 * inch:
+                    h = 5.5 * inch
+                    w = h * iw / ih
+                story += [Spacer(1, 10), Image(attachment["image"], width=w, height=h)]
+            except Exception:  # noqa: BLE001  (e.g. HEIC images reportlab can't read)
+                pass
+        if fields:
+            story += [_p("Information provided", H2), _answers_table(fields, answers)]
+    elif specs:
         story += _spec_tables(specs)
     elif source_pdf is None:
         if body:
@@ -214,8 +237,8 @@ def signed_document(out_path, source_pdf, body, fields, answers, sig_path, meta,
 
 EVENT_LABELS = {
     "created": "Packet created", "sent": "Sent", "viewed": "Opened by client", "signed": "Signed",
-    "completed": "All forms signed", "voided": "Cancelled", "extended": "Link extended",
-    "reminder": "Reminder", "receipt_emailed": "Confirmation emailed", "email_failed": "Email failed",
+    "completed": "Completed", "voided": "Cancelled", "extended": "Link extended",
+    "reminder": "Reminder", "receipt_emailed": "Confirmation emailed", "email_failed": "Email failed", "downloaded": "Downloaded by client", "confirmed": "Confirmed receipt",
 }
 
 
