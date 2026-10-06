@@ -327,3 +327,11 @@ tbody tr.row-overdue:hover td { background: color-mix(in srgb, var(--late-soft) 
 .fu-row.done .fu-meta { color: var(--ok); }
 .fu-row input[type=text] { padding: 7px 10px; }
 @media (max-width: 560px) { .fu-row { grid-template-columns: 1fr; } }
+
+/* forms the client still has to complete, shown on the dashboard */
+.still-needed { margin-top: 6px; color: var(--late); font-size: 12.5px; line-height: 1.35; max-width: 240px; }
+.still-needed span { font-weight: 600; }
+.still-needed ul { margin: 2px 0 0; padding-left: 16px; }
+.still-needed li { overflow-wrap: anywhere; }
+.remove-box { width: 250px; gap: 8px; padding: 12px; margin-top: 6px; background: var(--bad-soft, var(--bg));
+  border: 1px solid var(--rule); border-radius: 8px; text-align: left; white-space: normal; }

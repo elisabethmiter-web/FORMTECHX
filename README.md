@@ -22,9 +22,14 @@ Signatures are "simple electronic signatures" (drawn or typed, plus consent and 
 ## Staff and management logins
 
 - **Owner**: sign in with **admin** and the `ADMIN_PASSWORD` server setting. Always has management access, so you can't lock yourself out.
-- **Team** page (management only): create logins with a name, email, access level and a temporary password. People choose their own password the first time they sign in. Managers can change someone's access, reset a password, or deactivate a login (it stops working immediately).
-- **Staff** can create, send and track packets and use library forms, but can't add, edit or remove forms in the library (the buttons are hidden and the server refuses those actions).
-- **Management** can do everything staff can, plus manage the form library and the Team page.
+- **Team** page (management only): create logins with a name, email, access level and a temporary password. People choose their own password the first time they sign in. Managers can change someone's access, reset a password, deactivate a login (it stops working immediately, and can be turned back on), or **remove** it for good. When you remove someone, their packets are never deleted: you choose who gets them, or leave them visible to management only. You can't remove or deactivate your own login.
+- **Staff** only see **their own packets**: the ones they created, plus any packet where they are named as the sales rep (so a manager can set one up for them). Opening another person's packet by its address shows "Page not found". Staff can create, send and track packets and use library forms, but can't add, edit or remove forms in the library (the buttons are hidden and the server refuses those actions).
+- **Management** (and the owner) see **every packet from every user**, with a "by …" line under the sales rep showing who created it. They can also manage the form library and the Team page.
+
+## Dashboard order and missing forms
+
+- The newest packets are always at the top (by the date they were sent).
+- For any packet that isn't finished, the Status column lists in orange the forms the client **still needs to sign or approve**, so you can see what's missing without opening the packet. Packets with only files to review show "Receipt not confirmed yet" until the client confirms.
 - Each packet records who created it, and voiding, extending and detail changes note who did them.
 - Everyone can change their own password by clicking their name at the top right.
 - 8 wrong passwords from one address locks sign-in for 15 minutes.
@@ -129,5 +134,4 @@ With email on, you can send packets and reminders from the app, and both you and
 - Place the signature on a specific spot on the PDF page instead of a certificate page
 - Multiple signers per packet (e.g. two company directors), signing order
 - Automatic reminder emails after N days
-- Multiple staff logins
 - Client-uploaded attachments (ID, documents)

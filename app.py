@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS packets (
   so_number TEXT DEFAULT '',
   sales_rep TEXT DEFAULT '',
   created_by TEXT DEFAULT '',
+  created_by_id INTEGER,
   followups_json TEXT DEFAULT '[]',
   notes TEXT DEFAULT ''
 );
@@ -196,7 +197,12 @@ def _init_db_locked():
             conn.execute(f"ALTER TABLE packets ADD COLUMN {col} TEXT DEFAULT ''")
     if cols and "followups_json" not in cols:
         conn.execute("ALTER TABLE packets ADD COLUMN followups_json TEXT DEFAULT '[]'")
+    if cols and "created_by_id" not in cols:
+        conn.execute("ALTER TABLE packets ADD COLUMN created_by_id INTEGER")
     conn.executescript(SCHEMA)
+    # Older packets only stored the creator's name: link them to that login, or to the owner if none matches.
+    conn.execute("UPDATE packets SET created_by_id = COALESCE((SELECT u.id FROM users u WHERE u.name = "
+                 "packets.created_by COLLATE NOCASE ORDER BY u.id LIMIT 1), 0) WHERE created_by_id IS NULL")
     conn.commit()
     conn.close()
 
@@ -385,6 +391,27 @@ def actor():
     return g.user["name"] if g.get("user") else ""
 
 
+# ---------------------------------------------------------------- who sees which packets
+# Management and the owner see every packet. Staff see the packets they created, plus any packet
+# where they are named as the sales rep (so a manager can set one up for them).
+def packet_scope():
+    """SQL condition (and its arguments) limiting packets to the ones the signed-in user may see."""
+    if is_manager():
+        return "1=1", []
+    return "(created_by_id = ? OR (sales_rep != '' AND sales_rep = ? COLLATE NOCASE))", [g.user["id"], g.user["name"]]
+
+
+@app.before_request
+def guard_packet_access():
+    """Every staff page about one packet (/packets/<pid>/...) checks the packet is theirs."""
+    pid = (request.view_args or {}).get("pid")
+    if pid is None or not g.get("user") or is_manager():
+        return
+    cond, args = packet_scope()
+    if not db().execute(f"SELECT 1 FROM packets WHERE id=? AND {cond}", [pid] + args).fetchone():
+        abort(404)
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = None
@@ -481,7 +508,8 @@ def team():
             flash(f"Login created for {name} ({ROLE_LABELS[role]}). Give them the temporary password; "
                   f"they'll choose their own when they first sign in.", "ok")
             return redirect(url_for("team"))
-    users = db().execute("SELECT * FROM users ORDER BY active DESC, role DESC, name COLLATE NOCASE").fetchall()
+    users = db().execute("SELECT u.*, (SELECT COUNT(*) FROM packets p WHERE p.created_by_id = u.id) AS packet_count "
+                         "FROM users u ORDER BY active DESC, role DESC, name COLLATE NOCASE").fetchall()
     return render_template("team.html", users=users, form=request.form)
 
 
@@ -511,6 +539,19 @@ def team_update(uid):
         else:
             db().execute("UPDATE users SET active=? WHERE id=?", (1 if action == "activate" else 0, uid))
             flash(f"{u['name']} {'can sign in again' if action == 'activate' else 'can no longer sign in'}.", "ok")
+    elif action == "remove":
+        if uid == g.user["id"]:
+            flash("You can't remove your own login. Ask another manager.", "error")
+        else:
+            # Their packets are never deleted: they move to another login, or to management only.
+            to = request.form.get("transfer_to", "0")
+            new_owner = db().execute("SELECT id, name FROM users WHERE id=? AND id != ?", (to, uid)).fetchone() \
+                if to.isdigit() and to != "0" else None
+            n = db().execute("UPDATE packets SET created_by_id=? WHERE created_by_id=?",
+                             (new_owner["id"] if new_owner else 0, uid)).rowcount
+            db().execute("DELETE FROM users WHERE id=?", (uid,))
+            where = f"moved to {new_owner['name']}" if new_owner else "kept, visible to management"
+            flash(f"{u['name']}'s login was removed." + (f" Their {n} packet{'s' if n != 1 else ''} {'were' if n != 1 else 'was'} {where}." if n else ""), "ok")
     db().commit()
     return redirect(url_for("team"))
 
@@ -542,8 +583,17 @@ def effective_status(p):
 
 # ---------------------------------------------------------------- admin: dashboard
 def sales_reps():
+    cond, args = packet_scope()
     return [r[0] for r in db().execute(
-        "SELECT DISTINCT sales_rep FROM packets WHERE sales_rep != '' ORDER BY sales_rep COLLATE NOCASE")]
+        f"SELECT DISTINCT sales_rep FROM packets WHERE sales_rep != '' AND {cond} ORDER BY sales_rep COLLATE NOCASE",
+        args)]
+
+
+def still_needed(pid):
+    """Names of the forms the client still has to sign or approve."""
+    return [r[0] for r in db().execute(
+        "SELECT template_name FROM packet_items WHERE packet_id=? AND requires_signature=1 AND signed_at IS NULL "
+        "ORDER BY position", (pid,))]
 
 
 @app.route("/")
@@ -551,7 +601,8 @@ def sales_reps():
 def dashboard():
     q = request.args.get("q", "").strip()[:100]
     rep_filter = request.args.get("rep", "").strip()[:80]
-    sql, args = "SELECT * FROM packets WHERE 1=1", []
+    cond, args = packet_scope()
+    sql = f"SELECT * FROM packets WHERE {cond}"
     if q:
         like = f"%{q.replace('%', '').replace('_', '')}%"
         sql += (" AND (so_number LIKE ? OR sales_rep LIKE ? OR client_name LIKE ? OR client_email LIKE ?"
@@ -561,7 +612,8 @@ def dashboard():
     if rep_filter:
         sql += " AND sales_rep = ?"
         args.append(rep_filter)
-    rows = db().execute(sql + " ORDER BY created_at DESC", args).fetchall()
+    # Newest first, so the packets sent most recently are always at the top.
+    rows = db().execute(sql + " ORDER BY COALESCE(sent_at, created_at) DESC, id DESC", args).fetchall()
     packets = []
     counts = {"awaiting": 0, "viewed": 0, "completed": 0, "overdue": 0}
     for p in rows:
@@ -580,7 +632,8 @@ def dashboard():
         if dl["overdue"]:
             counts["overdue"] += 1
         packets.append({**dict(p), "signed": signed, "total": total, "state": st, "refusals": len(refusals),
-                        "deadline": dl, "last_fu": last_followup(p)})
+                        "deadline": dl, "last_fu": last_followup(p),
+                        "missing": still_needed(p["id"]) if st not in ("completed", "voided") else []})
     filt = request.args.get("show", "all")
     if filt == "open":
         packets = [p for p in packets if p["state"] in ("sent", "viewed", "in_progress", "draft")]
@@ -940,10 +993,10 @@ def new_packet():
         expires = (datetime.now(timezone.utc) + timedelta(days=days)).replace(microsecond=0).isoformat()
         cur = db().execute(
             "INSERT INTO packets (token, client_name, client_email, message, status, created_at, expires_at, "
-            "so_number, sales_rep, created_by) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "so_number, sales_rep, created_by, created_by_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (token, name, email, request.form.get("message", "").strip(), "draft", now(), expires,
              request.form.get("so_number", "").strip()[:40], request.form.get("sales_rep", "").strip()[:80],
-             actor()))
+             actor(), g.user["id"]))
         pid = cur.lastrowid
         by_id = {t["id"]: t for t in templates}
         for pos, tid in enumerate(ids):

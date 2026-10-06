@@ -2,7 +2,8 @@
 {% block title %}Packets{% endblock %}
 {% block content %}
 <div class="page-head">
-  <div><span class="eyebrow">Signing packets</span><h1>Who still needs to sign</h1></div>
+  <div><span class="eyebrow">{{ 'All packets · every user' if is_manager else 'Your packets' }}</span><h1>Who still needs to sign</h1>
+  {% if not is_manager %}<p class="muted small">Showing packets you created or where you're the sales rep.</p>{% endif %}</div>
 </div>
 
 <div class="stats">
@@ -43,8 +44,10 @@
       <tr class="clickable {{ 'row-overdue' if p.deadline.overdue }}" onclick="location.href='{{ url_for('packet_detail', pid=p.id) }}'">
         <td><div class="client-cell"><a href="{{ url_for('packet_detail', pid=p.id) }}">{{ p.client_name }}</a><span class="muted small">{{ p.client_email }}</span></div></td>
         <td class="mono">{{ p.so_number or '—' }}</td>
-        <td class="small">{{ p.sales_rep or '—' }}</td>
-        <td><span class="stamp s-{{ p.state }}">{{ {'draft':'Draft','sent':'Sent','viewed':'Opened','in_progress':'In progress','completed':'Signed','expired':'Expired','voided':'Cancelled'}[p.state] }}</span>{% if p.refusals %}<div class="decision neg small" style="margin-top:4px">Changes requested</div>{% endif %}</td>
+        <td class="small">{{ p.sales_rep or '—' }}{% if is_manager and p.created_by and p.created_by != p.sales_rep %}<div class="muted">by {{ p.created_by }}</div>{% endif %}</td>
+        <td><span class="stamp s-{{ p.state }}">{{ {'draft':'Draft','sent':'Sent','viewed':'Opened','in_progress':'In progress','completed':'Signed','expired':'Expired','voided':'Cancelled'}[p.state] }}</span>{% if p.refusals %}<div class="decision neg small" style="margin-top:4px">Changes requested</div>{% endif %}
+          {% if p.missing %}<div class="still-needed" title="{{ p.missing|join(', ') }}"><span>Still needed:</span><ul>{% for m in p.missing[:4] %}<li>{{ m }}</li>{% endfor %}{% if p.missing|length > 4 %}<li>+ {{ p.missing|length - 4 }} more</li>{% endif %}</ul></div>
+          {% elif p.total == 0 and p.state not in ('completed','voided') %}<div class="still-needed"><span>Receipt not confirmed yet</span></div>{% endif %}</td>
         <td><div class="progress"><div class="bar {{ 'done' if p.signed==p.total }}"><span style="width:{{ (100*p.signed/p.total)|round|int if p.total else 0 }}%"></span></div>{{ p.signed }} of {{ p.total }}</div></td>
         <td class="small">{{ p.sent_at|day }}{% if p.deadline.label %}<div class="due {{ 'late' if p.deadline.overdue }}">{{ p.deadline.label }}</div>{% elif p.completed_at %}<div class="muted">Done {{ p.completed_at|day }}</div>{% endif %}</td>
         <td class="small fu-cell">{% if p.last_fu %}<strong>#{{ p.last_fu.n }}</strong> · {{ p.last_fu.at|day }}{% if p.last_fu.note %}<div class="muted fu-note" title="{{ p.last_fu.note }}">{{ p.last_fu.note|truncate(60) }}</div>{% endif %}{% elif p.deadline.overdue %}<span class="due late">None yet</span>{% else %}<span class="muted">—</span>{% endif %}</td>
