@@ -70,7 +70,7 @@
         <div><button class="btn btn-quiet small">Save</button></div>
       </form>
       <dl class="meta">
-        <dt>Created</dt><dd>{{ p.created_at|when }}</dd>
+        <dt>Created</dt><dd>{{ p.created_at|when }}{% if p.created_by %} · {{ p.created_by }}{% endif %}</dd>
         <dt>Sent</dt><dd>{{ p.sent_at|when }}</dd>
         <dt>Opened</dt><dd>{{ p.first_viewed_at|when }}</dd>
         <dt>Completed</dt><dd>{{ p.completed_at|when }}</dd>

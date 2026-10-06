@@ -35,9 +35,7 @@
   <section class="panel">
     <div class="panel-head"><h2>Review the drawing{% if config.revision %} · {{ config.revision }}{% endif %}</h2><a class="small" href="{{ url_for('client_doc', token=p.token, iid=it.id) }}" target="_blank" rel="noopener">Open in a new tab</a></div>
     {% if config.changes %}<div class="note-box"><span class="eyebrow">What changed</span><div style="white-space:pre-wrap">{{ config.changes }}</div></div>{% endif %}
-    <div class="pdf-pages" id="pdf-pages" data-src="{{ url_for('client_doc', token=p.token, iid=it.id) }}" aria-label="{{ it.template_name }}">
-      <p class="muted small pdf-loading">Loading drawing…</p>
-    </div>
+    {% include "_doc_view.html" %}
     <div class="drawing-choices">
       <label class="decision-choice pos" for="decision_approved"><input type="radio" id="decision_approved" name="decision" value="approved" {{ 'checked' if answers.get('decision')=='approved' }}> <span><strong>Approve the drawing as shown</strong></span></label>
       <label class="decision-choice neg" for="decision_changes"><input type="radio" id="decision_changes" name="decision" value="changes" {{ 'checked' if answers.get('decision')=='changes' }}> <span><strong>Request changes</strong><br><span class="muted small">The drawing is not approved; we'll revise it.</span></span></label>
@@ -51,22 +49,18 @@
   {% elif it.template_kind=='pdf' %}
   <section class="panel">
     <div class="panel-head"><h2>Read the document</h2><a class="small" href="{{ url_for('client_doc', token=p.token, iid=it.id) }}" target="_blank" rel="noopener">Open in a new tab</a></div>
-    <div class="pdf-pages" id="pdf-pages" data-src="{{ url_for('client_doc', token=p.token, iid=it.id) }}" aria-label="{{ it.template_name }}">
-      <p class="muted small pdf-loading">Loading document…</p>
-    </div>
+    {% include "_doc_view.html" %}
   </section>
   {% elif it.template_kind=='file' %}
   <section class="panel">
     <div class="panel-head"><h2>Review the file</h2></div>
-    {% if (it.file_mime or '').startswith('image/') and it.file_mime in ('image/png','image/jpeg','image/gif','image/webp') %}
-      <img class="file-preview" src="{{ url_for('client_doc', token=p.token, iid=it.id) }}" alt="{{ it.file_name }}">
-    {% endif %}
+    {% include "_doc_view.html" %}
     <div class="file-card">
       <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>
       <div class="doc-main"><strong>{{ it.file_name }}</strong><span class="small muted">{{ it.file_name|filetype }}</span></div>
-      <a class="btn" href="{{ url_for('client_doc', token=p.token, iid=it.id, download=1) }}">Download to review</a>
+      <a class="btn {{ 'btn-quiet' if viewer.mode in ('pages','image','html') else '' }}" href="{{ url_for('client_doc', token=p.token, iid=it.id, download=1) }}">{{ 'Download original' if viewer.mode in ('pages','image','html') else 'Download to review' }}</a>
     </div>
-    <p class="muted small">Open the file on your device to read it, then sign below. Your signature is recorded against this exact file.</p>
+    <p class="muted small">{{ 'Read the file above, then sign below.' if viewer.mode in ('pages','image','html') else 'Open the file on your device to read it, then sign below.' }} Your signature is recorded against this exact file.</p>
   </section>
   {% elif is_specs %}
   <section class="panel">
@@ -150,10 +144,6 @@
   });
 })();
 </script>
-{% endif %}
-{% if it.template_kind in ('pdf','drawing') %}
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script src="{{ url_for('static', filename='pdfview.js') }}"></script>
 {% endif %}
 {% if is_specs %}
 <script src="{{ url_for('static', filename='specform.js') }}"></script>

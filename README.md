@@ -10,6 +10,24 @@ A small web app for sending forms to clients for e-signature and getting confirm
 
 Signatures are "simple electronic signatures" (drawn or typed, plus consent and an audit record). That's generally fine for engagement letters, intake and consent forms. For documents that legally need identity verification or a qualified signature, use a dedicated provider.
 
+## Staff and management logins
+
+- **Owner**: sign in with **admin** and the `ADMIN_PASSWORD` server setting. Always has management access, so you can't lock yourself out.
+- **Team** page (management only): create logins with a name, email, access level and a temporary password. People choose their own password the first time they sign in. Managers can change someone's access, reset a password, or deactivate a login (it stops working immediately).
+- **Staff** can create, send and track packets and use library forms, but can't add, edit or remove forms in the library (the buttons are hidden and the server refuses those actions).
+- **Management** can do everything staff can, plus manage the form library and the Team page.
+- Each packet records who created it, and voiding, extending and detail changes note who did them.
+- Everyone can change their own password by clicking their name at the top right.
+- 8 wrong passwords from one address locks sign-in for 15 minutes.
+
+## Documents shown on the signing page
+
+The client reads every document right above where they sign:
+- PDFs and drawing approvals are shown as page images (works on any phone, nothing to install). Tap a page to zoom.
+- Word, Excel, PowerPoint, OpenDocument, RTF, CSV and text files are converted and shown the same way when the app runs with Docker (the Dockerfile installs LibreOffice). Without Docker, Word (.docx), Excel (.xlsx), CSV and text files get a simplified preview.
+- Pictures are shown directly. Files that can't be previewed (ZIP, CAD...) are offered as a download.
+- When the client signs a Word/Excel file, the signed PDF includes its pages stamped with the signature; the original file is kept too.
+
 ## SO# and sales rep
 
 - Every packet has optional **SO#** and **Sales rep** fields (New packet page). Sales rep suggests names you've used before.

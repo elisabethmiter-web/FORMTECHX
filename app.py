@@ -22,11 +22,13 @@ from functools import wraps
 
 from flask import (Flask, abort, flash, g, redirect, render_template, request,
                    send_file, session, url_for)
+from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
 import forms
 import mailer
 import pdfgen
+import preview
 
 # ---------------------------------------------------------------- config
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
@@ -82,7 +84,19 @@ CREATE TABLE IF NOT EXISTS packets (
   expires_at TEXT,
   voided_at TEXT,
   so_number TEXT DEFAULT '',
-  sales_rep TEXT DEFAULT ''
+  sales_rep TEXT DEFAULT '',
+  created_by TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  email TEXT UNIQUE NOT NULL COLLATE NOCASE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('staff','manager')),
+  active INTEGER NOT NULL DEFAULT 1,
+  must_change_password INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  last_login_at TEXT
 );
 CREATE TABLE IF NOT EXISTS packet_items (
   id INTEGER PRIMARY KEY,
@@ -168,7 +182,7 @@ def _init_db_locked():
     _rebuild_if(conn, "packet_items", lambda sql: "template_id INTEGER NOT NULL" in sql or "requires_signature" not in sql
                 or "config_json" not in sql)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(packets)")}
-    for col in ("so_number", "sales_rep"):
+    for col in ("so_number", "sales_rep", "created_by"):
         if cols and col not in cols:
             conn.execute(f"ALTER TABLE packets ADD COLUMN {col} TEXT DEFAULT ''")
     conn.executescript(SCHEMA)
@@ -249,29 +263,199 @@ def check_csrf():
             abort(400, "Your session expired. Reload the page and try again.")
 
 
+# ---------------------------------------------------------------- users & roles
+# Two kinds of sign-in:
+#   * staff      – create, send and track packets; can view the form library but not change it
+#   * manager    – everything staff can do, plus add/edit/remove library forms and manage team logins
+# The ADMIN_PASSWORD environment variable is the owner login (username "admin"). It always works,
+# has manager rights, and is how the first team accounts are created.
+ROLE_LABELS = {"staff": "Staff", "manager": "Management"}
+OWNER = {"id": 0, "name": "Owner", "email": "admin", "role": "manager", "active": 1, "must_change_password": 0}
+_failed_logins = {}  # ip -> [timestamps]; slows down password guessing
+
+
+@app.before_request
+def load_user():
+    g.user = None
+    uid = session.get("uid")
+    if uid is None:
+        return
+    if uid == 0:
+        if ADMIN_PASSWORD:
+            g.user = OWNER
+        return
+    row = db().execute("SELECT * FROM users WHERE id=? AND active=1", (uid,)).fetchone()
+    if row and session.get("pwv") == row["password_hash"][-12:]:
+        g.user = dict(row)
+    else:
+        session.pop("uid", None)  # deactivated or password changed elsewhere
+
+
+def is_manager():
+    return bool(g.get("user")) and g.user["role"] == "manager"
+
+
+@app.context_processor
+def inject_user():
+    return {"current_user": g.get("user"), "is_manager": is_manager(), "ROLE_LABELS": ROLE_LABELS}
+
+
 def login_required(view):
     @wraps(view)
     def wrapper(*args, **kwargs):
-        if not session.get("admin"):
+        if not g.get("user"):
             return redirect(url_for("login", next=request.path))
+        if g.user.get("must_change_password") and request.endpoint not in ("account", "logout"):
+            flash("Choose your own password before continuing.", "error")
+            return redirect(url_for("account"))
         return view(*args, **kwargs)
     return wrapper
+
+
+def manager_required(view):
+    @wraps(view)
+    @login_required
+    def wrapper(*args, **kwargs):
+        if not is_manager():
+            return render_template("error.html", title="Management access only",
+                                   message="Only management can change the form library or team logins. "
+                                           "Ask a manager if a form needs adding or removing."), 403
+        return view(*args, **kwargs)
+    return wrapper
+
+
+def actor():
+    return g.user["name"] if g.get("user") else ""
 
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = None
-    if not ADMIN_PASSWORD:
-        error = "Set the ADMIN_PASSWORD environment variable before signing in."
-    elif request.method == "POST":
-        if hmac.compare_digest(request.form.get("password", ""), ADMIN_PASSWORD):
+    if request.method == "POST":
+        ip = client_ip()
+        recent = [t for t in _failed_logins.get(ip, []) if t > datetime.now(timezone.utc).timestamp() - 900]
+        _failed_logins[ip] = recent
+        email = request.form.get("email", "").strip()
+        password = request.form.get("password", "")
+        user = None
+        if len(recent) >= 8:
+            error = "Too many attempts. Wait 15 minutes and try again."
+        elif email.lower() == "admin":
+            if ADMIN_PASSWORD and hmac.compare_digest(password.encode(), ADMIN_PASSWORD.encode()):
+                user = OWNER
+        else:
+            row = db().execute("SELECT * FROM users WHERE email=? AND active=1", (email,)).fetchone()
+            if row and check_password_hash(row["password_hash"], password):
+                user = dict(row)
+        if user:
             session.clear()
-            session["admin"] = True
+            session["uid"] = user["id"]
+            if user["id"]:
+                session["pwv"] = user["password_hash"][-12:]
+                db().execute("UPDATE users SET last_login_at=? WHERE id=?", (now(), user["id"]))
+                db().commit()
             session.permanent = True
+            _failed_logins.pop(ip, None)
             nxt = request.args.get("next", "")
             return redirect(nxt if nxt.startswith("/") and not nxt.startswith("//") else url_for("dashboard"))
-        error = "That password is incorrect."
-    return render_template("login.html", error=error)
+        if not error:
+            _failed_logins[ip].append(datetime.now(timezone.utc).timestamp())
+            error = "That email and password don't match an active account."
+    return render_template("login.html", error=error, email=request.form.get("email", ""))
+
+
+def valid_password(pw):
+    if len(pw) < 8:
+        return "Use at least 8 characters."
+    return None
+
+
+@app.route("/account", methods=["GET", "POST"])
+def account():
+    if not g.get("user"):
+        return redirect(url_for("login"))
+    if g.user["id"] == 0:
+        flash("The owner login's password is the ADMIN_PASSWORD setting on your server.", "ok")
+        return redirect(url_for("dashboard"))
+    if request.method == "POST":
+        current, new, confirm = (request.form.get(k, "") for k in ("current", "new", "confirm"))
+        problem = None
+        if not check_password_hash(g.user["password_hash"], current):
+            problem = "Your current password is incorrect."
+        elif new != confirm:
+            problem = "The new passwords don't match."
+        else:
+            problem = valid_password(new)
+        if problem:
+            flash(problem, "error")
+        else:
+            h = generate_password_hash(new)
+            db().execute("UPDATE users SET password_hash=?, must_change_password=0 WHERE id=?", (h, g.user["id"]))
+            db().commit()
+            session["pwv"] = h[-12:]
+            flash("Password changed.", "ok")
+            return redirect(url_for("dashboard"))
+    return render_template("account.html")
+
+
+@app.route("/team", methods=["GET", "POST"])
+@manager_required
+def team():
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()[:80]
+        email = request.form.get("email", "").strip()[:120]
+        role = request.form.get("role", "staff")
+        pw = request.form.get("password", "")
+        problem = None
+        if not name or "@" not in email:
+            problem = "Add a name and a valid email address."
+        elif role not in ROLE_LABELS:
+            problem = "Choose Staff or Management."
+        elif db().execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone():
+            problem = "Someone already has a login with that email."
+        else:
+            problem = valid_password(pw)
+        if problem:
+            flash(problem, "error")
+        else:
+            db().execute("INSERT INTO users (name, email, password_hash, role, created_at) VALUES (?,?,?,?,?)",
+                         (name, email, generate_password_hash(pw), role, now()))
+            db().commit()
+            flash(f"Login created for {name} ({ROLE_LABELS[role]}). Give them the temporary password; "
+                  f"they'll choose their own when they first sign in.", "ok")
+            return redirect(url_for("team"))
+    users = db().execute("SELECT * FROM users ORDER BY active DESC, role DESC, name COLLATE NOCASE").fetchall()
+    return render_template("team.html", users=users, form=request.form)
+
+
+@app.route("/team/<int:uid>", methods=["POST"])
+@manager_required
+def team_update(uid):
+    u = db().execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone() or abort(404)
+    action = request.form.get("action")
+    if action == "role" and request.form.get("role") in ROLE_LABELS:
+        if uid == g.user["id"] and request.form["role"] != "manager":
+            flash("You can't remove your own management access. Ask another manager.", "error")
+        else:
+            db().execute("UPDATE users SET role=? WHERE id=?", (request.form["role"], uid))
+            flash(f"{u['name']} is now {ROLE_LABELS[request.form['role']]}.", "ok")
+    elif action == "password":
+        pw = request.form.get("password", "")
+        problem = valid_password(pw)
+        if problem:
+            flash(problem, "error")
+        else:
+            db().execute("UPDATE users SET password_hash=?, must_change_password=1 WHERE id=?",
+                         (generate_password_hash(pw), uid))
+            flash(f"Temporary password set for {u['name']}. They'll choose a new one at next sign-in.", "ok")
+    elif action in ("deactivate", "activate"):
+        if uid == g.user["id"]:
+            flash("You can't deactivate your own login.", "error")
+        else:
+            db().execute("UPDATE users SET active=? WHERE id=?", (1 if action == "activate" else 0, uid))
+            flash(f"{u['name']} {'can sign in again' if action == 'activate' else 'can no longer sign in'}.", "ok")
+    db().commit()
+    return redirect(url_for("team"))
 
 
 @app.route("/logout", methods=["POST"])
@@ -370,7 +554,47 @@ def save_upload(f):
     kind = "pdf" if head == b"%PDF-" and pdfgen.is_readable_pdf(path) else "file"
     mime = "application/pdf" if head == b"%PDF-" else (mimetypes.guess_type(original)[0] or f.mimetype
                                                        or "application/octet-stream")
+    if kind == "file":
+        try:  # prepare the on-page preview now so the client's page opens quickly
+            preview.ensure_preview(UPLOAD_DIR, stored, original)
+        except Exception:  # noqa: BLE001
+            app.logger.exception("Preview failed for %s", original)
     return {"stored": stored, "name": original, "mime": mime, "sha256": sha256_file(path), "kind": kind}
+
+
+PAGE_DIR = os.path.join(DATA_DIR, "pages")
+os.makedirs(PAGE_DIR, exist_ok=True)
+
+
+def item_viewer(it):
+    """How to show a packet item's document on the signing page."""
+    kind, stored = it["template_kind"], it["template_file"]
+    if not stored:
+        return {"mode": "none"}
+    pdf = None
+    if kind in ("pdf", "drawing"):
+        pdf = stored
+    elif kind == "file":
+        if (it["file_mime"] or "") in IMAGE_MIMES:
+            return {"mode": "image"}
+        try:
+            pv = preview.ensure_preview(UPLOAD_DIR, stored, it["file_name"] or stored)
+        except Exception:  # noqa: BLE001
+            app.logger.exception("Preview failed for item %s", it["id"])
+            pv = None
+        if pv and pv["type"] == "html":
+            with open(os.path.join(UPLOAD_DIR, pv["file"]), encoding="utf-8") as fh:
+                return {"mode": "html", "html": fh.read()}
+        if pv:
+            pdf = pv["file"]
+    if not pdf:
+        return {"mode": "download"}
+    try:
+        count = preview.page_count(os.path.join(UPLOAD_DIR, pdf))
+    except Exception:  # noqa: BLE001
+        app.logger.exception("Could not read pages of %s", pdf)
+        return {"mode": "download"}
+    return {"mode": "pages", "pdf": pdf, "count": min(count, 300)}
 
 
 IMAGE_MIMES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
@@ -512,7 +736,7 @@ def filetype_label(name, mime=""):
 
 
 @app.route("/library/upload", methods=["POST"])
-@login_required
+@manager_required
 def upload_pdf():
     f = request.files.get("file")
     name = request.form.get("name", "").strip()
@@ -554,7 +778,7 @@ def parse_fields_from_request():
 
 
 @app.route("/library/specs", methods=["POST"])
-@login_required
+@manager_required
 def add_spec_form():
     d = forms.SPEC_FORM
     db().execute("INSERT INTO templates (name, kind, description, fields_json, created_at) VALUES (?,?,?,?,?)",
@@ -565,7 +789,7 @@ def add_spec_form():
 
 
 @app.route("/library/new", methods=["GET", "POST"])
-@login_required
+@manager_required
 def new_form():
     if request.method == "POST":
         name = request.form.get("name", "").strip()
@@ -585,7 +809,7 @@ def new_form():
 
 
 @app.route("/library/<int:tid>/edit", methods=["GET", "POST"])
-@login_required
+@manager_required
 def edit_form(tid):
     t = db().execute("SELECT * FROM templates WHERE id=? AND archived=0", (tid,)).fetchone() or abort(404)
     if request.method == "POST":
@@ -604,7 +828,7 @@ def edit_form(tid):
 
 
 @app.route("/library/<int:tid>/archive", methods=["POST"])
-@login_required
+@manager_required
 def archive_form(tid):
     db().execute("UPDATE templates SET archived=1 WHERE id=?", (tid,))
     db().commit()
@@ -651,9 +875,10 @@ def new_packet():
         expires = (datetime.now(timezone.utc) + timedelta(days=days)).replace(microsecond=0).isoformat()
         cur = db().execute(
             "INSERT INTO packets (token, client_name, client_email, message, status, created_at, expires_at, "
-            "so_number, sales_rep) VALUES (?,?,?,?,?,?,?,?,?)",
+            "so_number, sales_rep, created_by) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (token, name, email, request.form.get("message", "").strip(), "draft", now(), expires,
-             request.form.get("so_number", "").strip()[:40], request.form.get("sales_rep", "").strip()[:80]))
+             request.form.get("so_number", "").strip()[:40], request.form.get("sales_rep", "").strip()[:80],
+             actor()))
         pid = cur.lastrowid
         by_id = {t["id"]: t for t in templates}
         for pos, tid in enumerate(ids):
@@ -687,7 +912,7 @@ def new_packet():
             parts.append(f"{len(approvals)} approval(s)")
         if uploads:
             parts.append(f"{len(uploads)} one-off file(s)")
-        log_event(pid, "created", ", ".join(parts))
+        log_event(pid, "created", ", ".join(parts) + (f" · by {actor()}" if actor() else ""))
         db().commit()
         if request.form.get("action") == "send_email" and mailer.enabled():
             return send_packet_email(pid)
@@ -740,7 +965,7 @@ def packet_detail(pid):
 def update_packet_details(pid):
     db().execute("UPDATE packets SET so_number=?, sales_rep=? WHERE id=?",
                  (request.form.get("so_number", "").strip()[:40], request.form.get("sales_rep", "").strip()[:80], pid))
-    log_event(pid, "details", "SO# / sales rep updated")
+    log_event(pid, "details", f"SO# / sales rep updated by {actor()}")
     db().commit()
     flash("Details saved.", "ok")
     return redirect(url_for("packet_detail", pid=pid))
@@ -770,7 +995,7 @@ def remind_packet(pid):
 def extend_packet(pid):
     exp = (datetime.now(timezone.utc) + timedelta(days=LINK_DAYS)).replace(microsecond=0).isoformat()
     db().execute("UPDATE packets SET expires_at=? WHERE id=?", (exp, pid))
-    log_event(pid, "extended", f"link valid until {exp[:10]}")
+    log_event(pid, "extended", f"link valid until {exp[:10]} · by {actor()}")
     db().commit()
     flash(f"Link extended by {LINK_DAYS} days.", "ok")
     return redirect(url_for("packet_detail", pid=pid))
@@ -780,7 +1005,7 @@ def extend_packet(pid):
 @login_required
 def void_packet(pid):
     db().execute("UPDATE packets SET voided_at=? WHERE id=? AND completed_at IS NULL", (now(), pid))
-    log_event(pid, "voided")
+    log_event(pid, "voided", f"by {actor()}")
     db().commit()
     flash("Packet cancelled. The signing link no longer works.", "ok")
     return redirect(url_for("packet_detail", pid=pid))
@@ -970,6 +1195,10 @@ def client_form(token, iid):
                     "so_number": p["so_number"] or ""}
             source = (os.path.join(UPLOAD_DIR, it["template_file"])
                       if it["template_kind"] in ("pdf", "drawing") else None)
+            if it["template_kind"] == "file":
+                v = item_viewer(it)
+                if v["mode"] == "pages":
+                    source = os.path.join(UPLOAD_DIR, v["pdf"])  # signed copy shows the document's pages
             approval_info = None
             if approval:
                 approval_info = {"kind": approval, "decision": answers["decision"],
@@ -1020,6 +1249,7 @@ def client_form(token, iid):
     return render_template("client_form.html", p=p, it=it, fields=fields, items=items, errors=errors,
                            answers=answers, body=body, is_specs=is_specs, spec_initial=spec_initial,
                            spec_def=forms.SPEC_FORM if is_specs else None, approval=approval, config=config,
+                           viewer=item_viewer(it),
                            signer_default=request.form.get("signer_name", p["client_name"]))
 
 
@@ -1089,6 +1319,20 @@ def client_option(token, iid, k):
         abort(410)
     it = db().execute("SELECT * FROM packet_items WHERE id=? AND packet_id=?", (iid, p["id"])).fetchone() or abort(404)
     return send_option(it, k)
+
+
+@app.route("/s/<token>/page/<int:iid>/<int:n>.png")
+def client_page(token, iid, n):
+    p = load_packet(token)
+    if client_block(p):
+        abort(410)
+    it = db().execute("SELECT * FROM packet_items WHERE id=? AND packet_id=?", (iid, p["id"])).fetchone() or abort(404)
+    v = item_viewer(it)
+    if v["mode"] != "pages" or not 0 <= n < v["count"]:
+        abort(404)
+    out = os.path.join(PAGE_DIR, f"{os.path.splitext(v['pdf'])[0]}-{n}.png")
+    preview.page_png(os.path.join(UPLOAD_DIR, v["pdf"]), n, out)
+    return send_file(out, mimetype="image/png", max_age=86400)
 
 
 @app.route("/s/<token>/signed/<int:iid>")
