@@ -10,6 +10,12 @@ A small web app for sending forms to clients for e-signature and getting confirm
 
 Signatures are "simple electronic signatures" (drawn or typed, plus consent and an audit record). That's generally fine for engagement letters, intake and consent forms. For documents that legally need identity verification or a qualified signature, use a dedicated provider.
 
+## SO# and sales rep
+
+- Every packet has optional **SO#** and **Sales rep** fields (New packet page). Sales rep suggests names you've used before.
+- Both show on the dashboard and packet page, and can be corrected on the packet page. The client sees the SO# on their packet page, and it's printed on the signed PDFs and the audit trail.
+- **Dashboard search** finds packets by SO# (with or without the "SO" prefix), client name or email, or sales rep. The **All sales reps** menu narrows the list to one rep and combines with the search and the All / Open / Completed tabs.
+
 ## Layout and drawing approvals
 
 On **New packet → Approvals**:

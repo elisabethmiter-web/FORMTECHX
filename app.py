@@ -80,7 +80,9 @@ CREATE TABLE IF NOT EXISTS packets (
   first_viewed_at TEXT,
   completed_at TEXT,
   expires_at TEXT,
-  voided_at TEXT
+  voided_at TEXT,
+  so_number TEXT DEFAULT '',
+  sales_rep TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS packet_items (
   id INTEGER PRIMARY KEY,
@@ -165,6 +167,10 @@ def _init_db_locked():
     _rebuild_if(conn, "templates", lambda sql: "'file'" not in sql or "file_mime" not in sql)
     _rebuild_if(conn, "packet_items", lambda sql: "template_id INTEGER NOT NULL" in sql or "requires_signature" not in sql
                 or "config_json" not in sql)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(packets)")}
+    for col in ("so_number", "sales_rep"):
+        if cols and col not in cols:
+            conn.execute(f"ALTER TABLE packets ADD COLUMN {col} TEXT DEFAULT ''")
     conn.executescript(SCHEMA)
     conn.commit()
     conn.close()
@@ -294,10 +300,27 @@ def effective_status(p):
 
 
 # ---------------------------------------------------------------- admin: dashboard
+def sales_reps():
+    return [r[0] for r in db().execute(
+        "SELECT DISTINCT sales_rep FROM packets WHERE sales_rep != '' ORDER BY sales_rep COLLATE NOCASE")]
+
+
 @app.route("/")
 @login_required
 def dashboard():
-    rows = db().execute("SELECT * FROM packets ORDER BY created_at DESC").fetchall()
+    q = request.args.get("q", "").strip()[:100]
+    rep_filter = request.args.get("rep", "").strip()[:80]
+    sql, args = "SELECT * FROM packets WHERE 1=1", []
+    if q:
+        like = f"%{q.replace('%', '').replace('_', '')}%"
+        sql += (" AND (so_number LIKE ? OR sales_rep LIKE ? OR client_name LIKE ? OR client_email LIKE ?"
+                " OR REPLACE(REPLACE(UPPER(so_number), 'SO', ''), '#', '') LIKE ?)")
+        bare = q.upper().replace("SO", "").replace("#", "").strip()
+        args += [like, like, like, like, f"%{bare}%" if bare else like]
+    if rep_filter:
+        sql += " AND sales_rep = ?"
+        args.append(rep_filter)
+    rows = db().execute(sql + " ORDER BY created_at DESC", args).fetchall()
     packets = []
     counts = {"awaiting": 0, "viewed": 0, "completed": 0}
     for p in rows:
@@ -320,7 +343,7 @@ def dashboard():
         packets = [p for p in packets if p["state"] == "completed"]
     has_templates = db().execute("SELECT 1 FROM templates WHERE archived=0 LIMIT 1").fetchone()
     return render_template("dashboard.html", packets=packets, counts=counts, show=filt,
-                           has_templates=bool(has_templates))
+                           has_templates=bool(has_templates), q=q, rep=rep_filter, reps=sales_reps())
 
 
 # ---------------------------------------------------------------- admin: form library
@@ -409,7 +432,8 @@ def decision_is_negative(kind, answers):
     return (kind, d) in (("layout", "none"), ("drawing", "changes"))
 
 
-app.jinja_env.globals.update(decision_label=decision_label, decision_is_negative=decision_is_negative)
+app.jinja_env.globals.update(decision_label=decision_label, decision_is_negative=decision_is_negative,
+                             sales_reps=lambda: sales_reps())
 
 
 @app.template_filter("fromjson")
@@ -626,9 +650,10 @@ def new_packet():
         days = int(request.form.get("expiry_days") or LINK_DAYS)
         expires = (datetime.now(timezone.utc) + timedelta(days=days)).replace(microsecond=0).isoformat()
         cur = db().execute(
-            "INSERT INTO packets (token, client_name, client_email, message, status, created_at, expires_at) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (token, name, email, request.form.get("message", "").strip(), "draft", now(), expires))
+            "INSERT INTO packets (token, client_name, client_email, message, status, created_at, expires_at, "
+            "so_number, sales_rep) VALUES (?,?,?,?,?,?,?,?,?)",
+            (token, name, email, request.form.get("message", "").strip(), "draft", now(), expires,
+             request.form.get("so_number", "").strip()[:40], request.form.get("sales_rep", "").strip()[:80]))
         pid = cur.lastrowid
         by_id = {t["id"]: t for t in templates}
         for pos, tid in enumerate(ids):
@@ -708,6 +733,17 @@ def packet_detail(pid):
     signed, total = packet_progress(pid)
     return render_template("packet_detail.html", p=p, items=items, events=events, signed=signed,
                            total=total, state=effective_status(p), link=signing_url(p["token"]))
+
+
+@app.route("/packets/<int:pid>/details", methods=["POST"])
+@login_required
+def update_packet_details(pid):
+    db().execute("UPDATE packets SET so_number=?, sales_rep=? WHERE id=?",
+                 (request.form.get("so_number", "").strip()[:40], request.form.get("sales_rep", "").strip()[:80], pid))
+    log_event(pid, "details", "SO# / sales rep updated")
+    db().commit()
+    flash("Details saved.", "ok")
+    return redirect(url_for("packet_detail", pid=pid))
 
 
 @app.route("/packets/<int:pid>/email", methods=["POST"])
@@ -930,7 +966,8 @@ def client_form(token, iid):
             meta = {"business": BUSINESS_NAME, "packet_ref": packet_ref(p), "client_name": p["client_name"],
                     "client_email": p["client_email"], "signer_name": signer, "signed_at": ts,
                     "ip": client_ip(), "user_agent": request.headers.get("User-Agent", "")[:300],
-                    "form_name": it["template_name"], "original_sha256": it["template_sha256"]}
+                    "form_name": it["template_name"], "original_sha256": it["template_sha256"],
+                    "so_number": p["so_number"] or ""}
             source = (os.path.join(UPLOAD_DIR, it["template_file"])
                       if it["template_kind"] in ("pdf", "drawing") else None)
             approval_info = None

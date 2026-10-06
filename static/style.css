@@ -81,7 +81,7 @@ p { margin: 0; }
 /* forms */
 label { display: grid; gap: 6px; font-weight: 500; }
 .hint { font-weight: 400; color: var(--muted); font-size: 0.85rem; }
-input[type=text], input[type=email], input[type=password], input[type=date], input[type=number], input[type=tel], textarea, select {
+input[type=text], input[type=search], input[type=email], input[type=password], input[type=date], input[type=number], input[type=tel], textarea, select {
   font: 15px var(--font-body); color: var(--ink); background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 10px 12px; width: 100%;
 }
 input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
@@ -274,3 +274,10 @@ dl.meta dd { margin: 0; font-variant-numeric: tabular-nums; min-width: 0; overfl
 .decision { display: block; font-weight: 600; font-size: 0.88rem; margin-top: 2px; }
 .decision.pos { color: var(--ok); }
 .decision.neg { color: var(--bad); }
+
+/* ===================== dashboard search ===================== */
+.search-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.search-bar label { display: block; }
+.search-q { flex: 1 1 260px; min-width: 0; }
+.search-rep { flex: 0 1 200px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

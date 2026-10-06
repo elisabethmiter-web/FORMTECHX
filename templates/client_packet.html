@@ -2,7 +2,7 @@
 {% block title %}{{ 'Forms to sign' if total else 'Files from ' ~ business_name }}{% endblock %}
 {% block content %}
 <section class="stack" style="gap:8px">
-  <span class="eyebrow">For {{ p.client_name }}</span>
+  <span class="eyebrow">For {{ p.client_name }}{% if p.so_number %} · Order {{ p.so_number }}{% endif %}</span>
   {% if total %}
   <h1>{{ business_name }} has sent you {{ total }} item{{ 's' if total!=1 }} to sign{% if info_items %} and {{ info_items|length }} file{{ 's' if info_items|length!=1 }} to review{% endif %}</h1>
   <p class="muted">Review each one, fill in anything requested, and sign. You can stop and come back with the same link until {{ p.expires_at|day }}.</p>

@@ -12,21 +12,35 @@
 </div>
 
 <section class="panel">
+  <form class="search-bar" method="get" role="search">
+    <input type="hidden" name="show" value="{{ show }}">
+    <label for="q" class="search-q"><span class="sr-only">Search</span>
+      <input id="q" type="search" name="q" value="{{ q }}" placeholder="Search SO#, client name or email, sales rep"></label>
+    <label for="rep" class="search-rep"><span class="sr-only">Sales rep</span>
+      <select id="rep" name="rep" onchange="this.form.submit()"><option value="">All sales reps</option>
+      {% for r in reps %}<option value="{{ r }}" {{ 'selected' if r==rep }}>{{ r }}</option>{% endfor %}</select></label>
+    <button class="btn">Search</button>
+    {% if q or rep %}<a class="btn btn-quiet" href="?show={{ show }}">Clear</a>{% endif %}
+  </form>
   <div class="panel-head">
     <div class="tabs">
-      <a href="?show=all" class="{{ 'active' if show=='all' }}">All</a>
-      <a href="?show=open" class="{{ 'active' if show=='open' }}">Open</a>
-      <a href="?show=completed" class="{{ 'active' if show=='completed' }}">Completed</a>
+      {% set extra = ('&q=' ~ q|urlencode if q else '') ~ ('&rep=' ~ rep|urlencode if rep else '') %}
+      <a href="?show=all{{ extra }}" class="{{ 'active' if show=='all' }}">All</a>
+      <a href="?show=open{{ extra }}" class="{{ 'active' if show=='open' }}">Open</a>
+      <a href="?show=completed{{ extra }}" class="{{ 'active' if show=='completed' }}">Completed</a>
     </div>
+    {% if q or rep %}<span class="muted small">{{ packets|length }} result{{ 's' if packets|length!=1 }}{% if q %} for “{{ q }}”{% endif %}{% if rep %} · {{ rep }}{% endif %}</span>{% endif %}
   </div>
   {% if packets %}
   <div class="table-wrap">
   <table>
-    <thead><tr><th>Client</th><th>Status</th><th>Signed</th><th>Sent</th><th>Last change</th></tr></thead>
+    <thead><tr><th>Client</th><th>SO#</th><th>Sales rep</th><th>Status</th><th>Signed</th><th>Sent</th><th>Last change</th></tr></thead>
     <tbody>
     {% for p in packets %}
       <tr class="clickable" onclick="location.href='{{ url_for('packet_detail', pid=p.id) }}'">
         <td><div class="client-cell"><a href="{{ url_for('packet_detail', pid=p.id) }}">{{ p.client_name }}</a><span class="muted small">{{ p.client_email }}</span></div></td>
+        <td class="mono">{{ p.so_number or '—' }}</td>
+        <td class="small">{{ p.sales_rep or '—' }}</td>
         <td><span class="stamp s-{{ p.state }}">{{ {'draft':'Draft','sent':'Sent','viewed':'Opened','in_progress':'In progress','completed':'Signed','expired':'Expired','voided':'Cancelled'}[p.state] }}</span>{% if p.refusals %}<div class="decision neg small" style="margin-top:4px">Changes requested</div>{% endif %}</td>
         <td><div class="progress"><div class="bar {{ 'done' if p.signed==p.total }}"><span style="width:{{ (100*p.signed/p.total)|round|int if p.total else 0 }}%"></span></div>{{ p.signed }} of {{ p.total }}</div></td>
         <td class="small">{{ p.sent_at|day }}</td>
@@ -38,8 +52,11 @@
   </div>
   {% else %}
   <div class="empty">
-    <h2>No packets {{ 'here' if show!='all' else 'yet' }}</h2>
-    {% if not has_templates %}
+    <h2>{{ 'No matches' if (q or rep) else ('No packets ' ~ ('here' if show!='all' else 'yet')) }}</h2>
+    {% if q or rep %}
+      <p class="muted">Nothing matches{% if q %} “{{ q }}”{% endif %}{% if rep %} for {{ rep }}{% endif %}. Check the spelling or clear the search.</p>
+      <a class="btn" href="?show={{ show }}">Clear search</a>
+    {% elif not has_templates %}
       <p class="muted">Start by adding the forms you send to clients: upload your PDFs or build a fillable form. Then bundle them into a packet.</p>
       <a class="btn btn-primary" href="{{ url_for('library') }}">Add your first form</a>
     {% else %}
