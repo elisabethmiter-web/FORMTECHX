@@ -6,3 +6,4 @@ pypdfium2>=4.20
 python-docx>=1.0
 openpyxl>=3.1
 gunicorn>=22.0
+tzdata>=2024.1

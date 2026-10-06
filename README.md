@@ -10,6 +10,15 @@ A small web app for sending forms to clients for e-signature and getting confirm
 
 Signatures are "simple electronic signatures" (drawn or typed, plus consent and an audit record). That's generally fine for engagement letters, intake and consent forms. For documents that legally need identity verification or a qualified signature, use a dedicated provider.
 
+## 48-hour signing target and follow-ups
+
+- Clients have **48 hours** from when a packet is sent to complete it (change with the `SIGN_WITHIN_HOURS` setting). The client sees "Please complete by …" on their page. The signing link itself stays valid until it expires (30 days by default), so a late client can still sign.
+- Packets not completed in time turn **orange** on the dashboard ("Overdue by 5 h"), get an **Overdue** count card and tab, and an orange banner on the packet page. Others show "Due in 20 h".
+- Dashboard tabs: **All · Open · Awaiting client** (sent, not opened yet) **· Overdue · Completed**.
+- Each packet has **Follow-ups & notes**: five follow-up checkboxes, each with its own note. Ticking one stamps the date, time and who did it. A general Notes box holds anything else. Changes appear in the packet's activity history.
+- The dashboard's **Last follow-up** column shows the latest follow-up number, date and note, or "None yet" in orange when an overdue packet hasn't been followed up.
+- Times are shown in Toronto time (change with the `TIMEZONE` setting, e.g. `America/Vancouver`).
+
 ## Staff and management logins
 
 - **Owner**: sign in with **admin** and the `ADMIN_PASSWORD` server setting. Always has management access, so you can't lock yourself out.

@@ -42,6 +42,13 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 BUSINESS_NAME = os.environ.get("BUSINESS_NAME", "FormSign")
 BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
 LINK_DAYS = int(os.environ.get("LINK_EXPIRY_DAYS", "30"))
+SIGN_WITHIN_HOURS = int(os.environ.get("SIGN_WITHIN_HOURS", "48"))   # target time for the client to finish
+FOLLOWUP_SLOTS = 5
+try:
+    from zoneinfo import ZoneInfo
+    LOCAL_TZ = ZoneInfo(os.environ.get("TIMEZONE", "America/Toronto"))
+except Exception:  # noqa: BLE001  (no time-zone data installed)
+    LOCAL_TZ = timezone.utc
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -85,7 +92,9 @@ CREATE TABLE IF NOT EXISTS packets (
   voided_at TEXT,
   so_number TEXT DEFAULT '',
   sales_rep TEXT DEFAULT '',
-  created_by TEXT DEFAULT ''
+  created_by TEXT DEFAULT '',
+  followups_json TEXT DEFAULT '[]',
+  notes TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY,
@@ -182,9 +191,11 @@ def _init_db_locked():
     _rebuild_if(conn, "packet_items", lambda sql: "template_id INTEGER NOT NULL" in sql or "requires_signature" not in sql
                 or "config_json" not in sql)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(packets)")}
-    for col in ("so_number", "sales_rep", "created_by"):
+    for col in ("so_number", "sales_rep", "created_by", "notes"):
         if cols and col not in cols:
             conn.execute(f"ALTER TABLE packets ADD COLUMN {col} TEXT DEFAULT ''")
+    if cols and "followups_json" not in cols:
+        conn.execute("ALTER TABLE packets ADD COLUMN followups_json TEXT DEFAULT '[]'")
     conn.executescript(SCHEMA)
     conn.commit()
     conn.close()
@@ -229,7 +240,53 @@ def fmt_when(value):
         dt = datetime.fromisoformat(value)
     except ValueError:
         return value
-    return dt.strftime("%b %d, %Y · %H:%M UTC")
+    loc = to_local(dt)
+    return f"{loc.strftime('%b %d, %Y')} · {loc.strftime('%I:%M %p').lstrip('0')} {loc.strftime('%Z')}"
+
+
+def to_local(dt):
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(LOCAL_TZ)
+
+
+def human_span(seconds):
+    seconds = abs(int(seconds))
+    if seconds < 3600:
+        return f"{max(1, seconds // 60)} min"
+    if seconds < 48 * 3600:
+        return f"{seconds // 3600} h"
+    return f"{seconds // 86400} days"
+
+
+def deadline_info(p):
+    """48-hour signing target: when it's due and whether it's been missed."""
+    if not p["sent_at"] or p["completed_at"] or p["voided_at"]:
+        return {"due_at": None, "overdue": False, "label": ""}
+    due = datetime.fromisoformat(p["sent_at"]) + timedelta(hours=SIGN_WITHIN_HOURS)
+    left = (due - datetime.now(timezone.utc)).total_seconds()
+    return {"due_at": due.isoformat(), "overdue": left < 0,
+            "label": f"Overdue by {human_span(left)}" if left < 0 else f"Due in {human_span(left)}"}
+
+
+def followups_of(p):
+    try:
+        fu = json.loads(p["followups_json"] or "[]")
+    except (ValueError, TypeError):
+        fu = []
+    fu = [f for f in fu if isinstance(f, dict)][:FOLLOWUP_SLOTS]
+    while len(fu) < FOLLOWUP_SLOTS:
+        fu.append({"done": False, "at": None, "by": "", "note": ""})
+    return fu
+
+
+def last_followup(p):
+    fu = followups_of(p)
+    done = [(i + 1, f) for i, f in enumerate(fu) if f.get("done")]
+    if not done:
+        return None
+    n, f = done[-1]
+    return {"n": n, "at": f.get("at"), "by": f.get("by", ""), "note": f.get("note", "")}
 
 
 @app.template_filter("day")
@@ -237,7 +294,7 @@ def fmt_day(value):
     if not value:
         return "—"
     try:
-        return datetime.fromisoformat(value).strftime("%b %d, %Y")
+        return to_local(datetime.fromisoformat(value)).strftime("%b %d, %Y")
     except ValueError:
         return value
 
@@ -506,7 +563,7 @@ def dashboard():
         args.append(rep_filter)
     rows = db().execute(sql + " ORDER BY created_at DESC", args).fetchall()
     packets = []
-    counts = {"awaiting": 0, "viewed": 0, "completed": 0}
+    counts = {"awaiting": 0, "viewed": 0, "completed": 0, "overdue": 0}
     for p in rows:
         signed, total = packet_progress(p["id"])
         st = effective_status(p)
@@ -519,14 +576,22 @@ def dashboard():
         refusals = [r for r in db().execute(
             "SELECT template_kind, answers_json FROM packet_items WHERE packet_id=? AND template_kind IN "
             "('layout','drawing') AND signed_at IS NOT NULL", (p["id"],)) if decision_is_negative(r[0], r[1])]
-        packets.append({**dict(p), "signed": signed, "total": total, "state": st, "refusals": len(refusals)})
+        dl = deadline_info(p) if st in ("sent", "viewed", "in_progress") else {"due_at": None, "overdue": False, "label": ""}
+        if dl["overdue"]:
+            counts["overdue"] += 1
+        packets.append({**dict(p), "signed": signed, "total": total, "state": st, "refusals": len(refusals),
+                        "deadline": dl, "last_fu": last_followup(p)})
     filt = request.args.get("show", "all")
     if filt == "open":
         packets = [p for p in packets if p["state"] in ("sent", "viewed", "in_progress", "draft")]
+    elif filt == "awaiting":   # sent, client hasn't opened it yet
+        packets = [p for p in packets if p["state"] == "sent"]
+    elif filt == "overdue":
+        packets = [p for p in packets if p["deadline"]["overdue"]]
     elif filt == "completed":
         packets = [p for p in packets if p["state"] == "completed"]
     has_templates = db().execute("SELECT 1 FROM templates WHERE archived=0 LIMIT 1").fetchone()
-    return render_template("dashboard.html", packets=packets, counts=counts, show=filt,
+    return render_template("dashboard.html", packets=packets, counts=counts, show=filt, sign_hours=SIGN_WITHIN_HOURS,
                            has_templates=bool(has_templates), q=q, rep=rep_filter, reps=sales_reps())
 
 
@@ -957,6 +1022,7 @@ def packet_detail(pid):
     events = db().execute("SELECT * FROM events WHERE packet_id=? ORDER BY at DESC, id DESC", (pid,)).fetchall()
     signed, total = packet_progress(pid)
     return render_template("packet_detail.html", p=p, items=items, events=events, signed=signed,
+                           deadline=deadline_info(p), followups=followups_of(p), sign_hours=SIGN_WITHIN_HOURS,
                            total=total, state=effective_status(p), link=signing_url(p["token"]))
 
 
@@ -969,6 +1035,39 @@ def update_packet_details(pid):
     db().commit()
     flash("Details saved.", "ok")
     return redirect(url_for("packet_detail", pid=pid))
+
+
+@app.route("/packets/<int:pid>/followups", methods=["POST"])
+@login_required
+def save_followups(pid):
+    p = db().execute("SELECT * FROM packets WHERE id=?", (pid,)).fetchone() or abort(404)
+    old = followups_of(p)
+    new, changes = [], []
+    for i in range(FOLLOWUP_SLOTS):
+        done = request.form.get(f"fu_done_{i}") == "on"
+        note = request.form.get(f"fu_note_{i}", "").strip()[:500]
+        o = old[i]
+        if done and not o.get("done"):
+            entry = {"done": True, "at": now(), "by": actor(), "note": note}
+            changes.append(f"follow-up {i + 1} recorded" + (f": {note}" if note else ""))
+        elif done:
+            entry = dict(o, note=note)
+            if note != o.get("note"):
+                changes.append(f"follow-up {i + 1} note updated")
+        else:
+            entry = {"done": False, "at": None, "by": "", "note": note}
+            if o.get("done"):
+                changes.append(f"follow-up {i + 1} unticked")
+        new.append(entry)
+    notes = request.form.get("notes", "").strip()[:5000]
+    if notes != (p["notes"] or ""):
+        changes.append("notes updated")
+    db().execute("UPDATE packets SET followups_json=?, notes=? WHERE id=?", (json.dumps(new), notes, pid))
+    for c in changes[:6]:
+        log_event(pid, "followup", f"{c[:180]} · by {actor()}")
+    db().commit()
+    flash("Follow-ups saved." if changes else "No changes to save.", "ok")
+    return redirect(url_for("packet_detail", pid=pid) + "#followups")
 
 
 @app.route("/packets/<int:pid>/email", methods=["POST"])
@@ -1098,6 +1197,7 @@ def client_packet(token):
     info_items = [i for i in items if not i["requires_signature"]]
     next_item = next((i for i in sign_items if not i["signed_at"]), None)
     return render_template("client_packet.html", p=p, items=sign_items, info_items=info_items, signed=signed,
+                           deadline=deadline_info(p),
                            total=total, next_item=next_item)
 
 

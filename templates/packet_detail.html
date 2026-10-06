@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set labels = {'draft':'Draft','sent':'Sent','viewed':'Opened','in_progress':'In progress','completed':'Signed','expired':'Expired','voided':'Cancelled'} %}
-{% set ev = {'created':'Packet created','sent':'Sent','viewed':'Opened by client','signed':'Signed','completed':'Completed','voided':'Cancelled','extended':'Link extended','reminder':'Reminder','receipt_emailed':'Confirmation emailed','email_failed':'Email failed','details':'Details updated','downloaded':'Downloaded by client','confirmed':'Confirmed receipt'} %}
+{% set ev = {'created':'Packet created','sent':'Sent','viewed':'Opened by client','signed':'Signed','completed':'Completed','voided':'Cancelled','extended':'Link extended','reminder':'Reminder','receipt_emailed':'Confirmation emailed','email_failed':'Email failed','details':'Details updated','followup':'Follow-up','downloaded':'Downloaded by client','confirmed':'Confirmed receipt'} %}
 {% block title %}{{ p.client_name }}{% endblock %}
 {% block content %}
 <div class="page-head">
@@ -12,6 +12,11 @@
   </div>
 </div>
 
+{% if deadline.overdue %}
+<div class="flash flash-overdue">Not completed within {{ sign_hours }} hours: sent {{ p.sent_at|when }}, {{ deadline.label|lower }}. Follow up with {{ p.client_name }} and record it below.</div>
+{% elif deadline.due_at %}
+<div class="flash flash-due">Client target: complete by {{ deadline.due_at|when }} ({{ deadline.label|lower }}).</div>
+{% endif %}
 {% if state not in ('completed','voided') %}
 <section class="panel">
   <div class="panel-head"><h2>Signing link</h2><span class="muted small">Valid until {{ p.expires_at|day }}</span></div>
@@ -34,6 +39,7 @@
 {% endif %}
 
 <div class="detail-grid">
+  <div class="stack">
   <section class="panel">
     <div class="panel-head"><h2>Forms and files</h2><span class="muted small">{{ signed }} of {{ total }} signed</span></div>
     <div class="doc-list">
@@ -57,6 +63,27 @@
     </div>
     {% if p.message %}<div class="stack" style="gap:4px"><span class="eyebrow">Your note</span><p style="white-space:pre-wrap">{{ p.message }}</p></div>{% endif %}
   </section>
+
+  <section class="panel followups" id="followups">
+    <div class="panel-head"><h2>Follow-ups &amp; notes</h2>
+      {% set done_n = followups|selectattr('done')|list|length %}<span class="muted small">{{ done_n }} of {{ followups|length }} follow-ups done</span></div>
+    <form method="post" action="{{ url_for('save_followups', pid=p.id) }}" class="stack" style="gap:10px">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <ol class="fu-list">
+      {% for f in followups %}
+        <li class="fu-row {{ 'done' if f.done }}">
+          <label class="check fu-check" for="fu_done_{{ loop.index0 }}"><input type="checkbox" id="fu_done_{{ loop.index0 }}" name="fu_done_{{ loop.index0 }}" {{ 'checked' if f.done }}>
+            <span><strong>Follow-up {{ loop.index }}</strong><br><span class="small muted fu-meta">{% if f.done %}{{ f.at|when }}{% if f.by %} · {{ f.by }}{% endif %}{% else %}Not done{% endif %}</span></span></label>
+          <input type="text" name="fu_note_{{ loop.index0 }}" value="{{ f.note }}" maxlength="500" placeholder="e.g. Called, left voicemail / Client will sign tonight" aria-label="Note for follow-up {{ loop.index }}">
+        </li>
+      {% endfor %}
+      </ol>
+      <label for="notes">Notes <span class="hint">Anything else about this packet, visible to the team only</span>
+        <textarea id="notes" name="notes" rows="3">{{ p.notes or '' }}</textarea></label>
+      <div><button class="btn btn-primary">Save follow-ups</button></div>
+    </form>
+  </section>
+  </div>
 
   <aside class="stack">
     <section class="panel">

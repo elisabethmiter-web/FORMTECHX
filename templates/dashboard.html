@@ -9,6 +9,7 @@
   <div class="stat"><span class="eyebrow">Awaiting client</span><strong>{{ counts.awaiting }}</strong><span class="muted small">sent, not opened yet</span></div>
   <div class="stat"><span class="eyebrow">Opened, in progress</span><strong>{{ counts.viewed }}</strong><span class="muted small">client has the link open</span></div>
   <div class="stat"><span class="eyebrow">Completed</span><strong>{{ counts.completed }}</strong><span class="muted small">every form signed</span></div>
+  <a class="stat stat-overdue {{ 'has' if counts.overdue }}" href="?show=overdue"><span class="eyebrow">Overdue</span><strong>{{ counts.overdue }}</strong><span class="muted small">not done within {{ sign_hours }} h</span></a>
 </div>
 
 <section class="panel">
@@ -27,6 +28,8 @@
       {% set extra = ('&q=' ~ q|urlencode if q else '') ~ ('&rep=' ~ rep|urlencode if rep else '') %}
       <a href="?show=all{{ extra }}" class="{{ 'active' if show=='all' }}">All</a>
       <a href="?show=open{{ extra }}" class="{{ 'active' if show=='open' }}">Open</a>
+      <a href="?show=awaiting{{ extra }}" class="{{ 'active' if show=='awaiting' }}">Awaiting client</a>
+      <a href="?show=overdue{{ extra }}" class="{{ 'active' if show=='overdue' }} tab-overdue">Overdue{% if counts.overdue %} ({{ counts.overdue }}){% endif %}</a>
       <a href="?show=completed{{ extra }}" class="{{ 'active' if show=='completed' }}">Completed</a>
     </div>
     {% if q or rep %}<span class="muted small">{{ packets|length }} result{{ 's' if packets|length!=1 }}{% if q %} for “{{ q }}”{% endif %}{% if rep %} · {{ rep }}{% endif %}</span>{% endif %}
@@ -34,17 +37,17 @@
   {% if packets %}
   <div class="table-wrap">
   <table>
-    <thead><tr><th>Client</th><th>SO#</th><th>Sales rep</th><th>Status</th><th>Signed</th><th>Sent</th><th>Last change</th></tr></thead>
+    <thead><tr><th>Client</th><th>SO#</th><th>Sales rep</th><th>Status</th><th>Signed</th><th>Sent / due</th><th>Last follow-up</th></tr></thead>
     <tbody>
     {% for p in packets %}
-      <tr class="clickable" onclick="location.href='{{ url_for('packet_detail', pid=p.id) }}'">
+      <tr class="clickable {{ 'row-overdue' if p.deadline.overdue }}" onclick="location.href='{{ url_for('packet_detail', pid=p.id) }}'">
         <td><div class="client-cell"><a href="{{ url_for('packet_detail', pid=p.id) }}">{{ p.client_name }}</a><span class="muted small">{{ p.client_email }}</span></div></td>
         <td class="mono">{{ p.so_number or '—' }}</td>
         <td class="small">{{ p.sales_rep or '—' }}</td>
         <td><span class="stamp s-{{ p.state }}">{{ {'draft':'Draft','sent':'Sent','viewed':'Opened','in_progress':'In progress','completed':'Signed','expired':'Expired','voided':'Cancelled'}[p.state] }}</span>{% if p.refusals %}<div class="decision neg small" style="margin-top:4px">Changes requested</div>{% endif %}</td>
         <td><div class="progress"><div class="bar {{ 'done' if p.signed==p.total }}"><span style="width:{{ (100*p.signed/p.total)|round|int if p.total else 0 }}%"></span></div>{{ p.signed }} of {{ p.total }}</div></td>
-        <td class="small">{{ p.sent_at|day }}</td>
-        <td class="small muted">{{ (p.completed_at or p.first_viewed_at or p.sent_at or p.created_at)|day }}</td>
+        <td class="small">{{ p.sent_at|day }}{% if p.deadline.label %}<div class="due {{ 'late' if p.deadline.overdue }}">{{ p.deadline.label }}</div>{% elif p.completed_at %}<div class="muted">Done {{ p.completed_at|day }}</div>{% endif %}</td>
+        <td class="small fu-cell">{% if p.last_fu %}<strong>#{{ p.last_fu.n }}</strong> · {{ p.last_fu.at|day }}{% if p.last_fu.note %}<div class="muted fu-note" title="{{ p.last_fu.note }}">{{ p.last_fu.note|truncate(60) }}</div>{% endif %}{% elif p.deadline.overdue %}<span class="due late">None yet</span>{% else %}<span class="muted">—</span>{% endif %}</td>
       </tr>
     {% endfor %}
     </tbody>

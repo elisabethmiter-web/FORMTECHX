@@ -19,6 +19,7 @@
   --font-mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
   --radius: 8px;
   --r0: #2f5bd3; --r1: #c27803;
+  --late: #c25e00; --late-soft: #fff0e0;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -28,6 +29,7 @@
     --ok: #6fcf9b; --ok-soft: #173326; --warn: #e8b55c; --warn-soft: #362a14;
     --bad: #f08a80; --bad-soft: #3a1c1a; color-scheme: dark;
     --r0: #7f9cf0; --r1: #e9a93a;
+    --late: #f0a050; --late-soft: #3a2614;
   }
 }
 
@@ -303,3 +305,25 @@ tr.muted td { opacity: .6; }
 
 .file-card .doc-main { display: grid; gap: 1px; }
 .doc-pages a { display: block; }
+
+/* ===================== 48-hour target & follow-ups ===================== */
+a.stat { color: inherit; text-decoration: none; }
+.stat-overdue.has { border-color: var(--late); background: var(--late-soft); }
+.stat-overdue.has strong, .stat-overdue.has .eyebrow { color: var(--late); }
+.tabs a.tab-overdue { color: var(--late); }
+.tabs a.tab-overdue.active { background: var(--late); color: #fff; }
+tbody tr.row-overdue td { background: var(--late-soft); }
+tr.row-overdue td:first-child { box-shadow: inset 4px 0 0 var(--late); padding-left: 12px; }
+tbody tr.row-overdue:hover td { background: color-mix(in srgb, var(--late-soft) 70%, var(--late) 12%); }
+.due { font-weight: 600; color: var(--muted); margin-top: 2px; }
+.due.late { color: var(--late); }
+.fu-cell { max-width: 220px; }
+.fu-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.flash-overdue { background: var(--late-soft); color: var(--late); border-left: 4px solid var(--late); }
+.flash-due { background: var(--accent-soft); color: var(--accent); }
+.fu-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.fu-row { display: grid; grid-template-columns: minmax(170px, 220px) minmax(0, 1fr); gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--rule); border-radius: 6px; }
+.fu-row.done { background: var(--ok-soft); border-color: transparent; }
+.fu-row.done .fu-meta { color: var(--ok); }
+.fu-row input[type=text] { padding: 7px 10px; }
+@media (max-width: 560px) { .fu-row { grid-template-columns: 1fr; } }
